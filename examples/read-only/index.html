@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenMarkdown editor: reading mode</title>
+    <style>
+      #modes { display: flex; gap: 6px; margin-bottom: 10px; font: 14px system-ui, sans-serif; }
+      #modes [aria-pressed="true"] { font-weight: 700; }
+      #editor { height: 340px; border: 1px solid #d9d6cf; border-radius: 8px; overflow: hidden; }
+      #editor .cm-editor { height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div id="modes" role="group" aria-label="Mode">
+      <button type="button" data-mode="reading">Reading</button>
+      <button type="button" data-mode="live">Live</button>
+      <button type="button" data-mode="source">Source</button>
+    </div>
+    <div id="editor"></div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

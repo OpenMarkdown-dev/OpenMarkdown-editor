@@ -1,0 +1,57 @@
+# Publish @openmarkdown-dev/editor to npm when a version tag is pushed.
+#
+# Trigger: a tag `v<version>` whose version equals package.json's. The tag is
+# pushed by a maintainer after the release commit lands (see the release
+# runbook in the source monorepo: docs/release/editor-publish.md).
+#
+# Authentication, in order of preference:
+#   1. npm trusted publishing (OIDC): configure this repository + this workflow
+#      file as a trusted publisher on npmjs.com; no token is stored anywhere.
+#   2. an `NPM_TOKEN` repository secret (a granular automation token limited to
+#      @openmarkdown-dev/editor), used only when the secret is set.
+# Either way the package is published with a provenance attestation
+# (`--provenance`), which needs `id-token: write`.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm >= 11.5.1.
+      - run: npm install -g npm@^11.5.1
+      - name: Tag matches package.json
+        run: |
+          v="$(node -p 'require("./package.json").version')"
+          [ "${GITHUB_REF_NAME}" = "v${v}" ] || { echo "tag ${GITHUB_REF_NAME} != v${v}"; exit 1; }
+      - name: CHANGELOG has this version on top
+        run: |
+          v="$(node -p 'require("./package.json").version')"
+          top="$(grep -m1 -E '^## ' CHANGELOG.md)"
+          case "$top" in *"$v"*) ;; *) echo "CHANGELOG top entry is '$top', expected $v"; exit 1;; esac
+      - name: No unfilled placeholders
+        run: |
+          if grep -rnE '\{\{[A-Z_]+\}\}' --exclude-dir=node_modules --exclude-dir=.git .; then
+            echo "fill in the placeholders listed above before publishing"; exit 1
+          fi
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+      - name: Publish with provenance
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

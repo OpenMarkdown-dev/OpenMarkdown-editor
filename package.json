@@ -1,0 +1,86 @@
+{
+  "name": "@openmarkdown-dev/editor",
+  "version": "0.1.0",
+  "description": "A live-preview Markdown editor on CodeMirror 6 that edits the Markdown source itself, for a lossless round-trip: open and save without editing, and the file is byte-for-byte what it was.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./no-diagrams": {
+      "types": "./dist/no-diagrams.d.ts",
+      "import": "./dist/no-diagrams.js",
+      "default": "./dist/no-diagrams.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "files": [
+    "dist/index.js",
+    "dist/index.d.ts",
+    "dist/no-diagrams.js",
+    "dist/no-diagrams.d.ts",
+    "dist/editor.js"
+  ],
+  "keywords": [
+    "markdown",
+    "markdown-editor",
+    "editor",
+    "codemirror",
+    "live-preview",
+    "wysiwyg",
+    "embeddable",
+    "lossless",
+    "round-trip",
+    "gfm",
+    "mermaid",
+    "katex",
+    "typescript",
+    "react"
+  ],
+  "homepage": "https://openmarkdown.dev/editor/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OpenMarkdown-dev/OpenMarkdown-editor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/OpenMarkdown-dev/OpenMarkdown-editor/issues"
+  },
+  "peerDependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/commands": "^6.10.4",
+    "@codemirror/lang-markdown": "^6.5.0",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/language-data": "^6.5.2",
+    "@codemirror/search": "^6.7.1",
+    "@codemirror/state": "^6.7.0",
+    "@codemirror/view": "^6.43.4",
+    "@lezer/highlight": "^1.2.3",
+    "@lezer/markdown": "^1.6.4"
+  },
+  "dependencies": {
+    "mermaid": "11.17.2",
+    "temml": "^0.11.11"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "update-api": "node build.mjs --update-api"
+  },
+  "devDependencies": {
+    "@lezer/common": "^1.5.2",
+    "@types/node": "^26.1.0",
+    "rollup": "^4.62.2",
+    "rollup-plugin-dts": "6.4.1",
+    "typescript": "~5.8.3",
+    "vite": "^7.3.7",
+    "vitest": "^4.1.12"
+  }
+}

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenMarkdown editor: image upload</title>
+    <style>
+      #editor { height: 340px; border: 1px solid #d9d6cf; border-radius: 8px; overflow: hidden; }
+      #editor .cm-editor { height: 100%; }
+      #uploads { font: 13px ui-monospace, monospace; margin-top: 10px; min-height: 1.5em; }
+    </style>
+  </head>
+  <body>
+    <div id="editor"></div>
+    <ol id="uploads" aria-label="Uploads"></ol>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,29 @@
+# Build, typecheck and test every push and pull request.
+#
+# This repository is a one-way export of the editor from the OpenMarkdown
+# monorepo (see CONTRIBUTING.md); the same checks run there before each export.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+      - name: Package contents
+        run: npm pack --dry-run

@@ -1,0 +1,5 @@
+{
+  "$comment": "What a path opens as, and what is listed (spec: image-viewer / 一条路径打开成什么只在一处判; home-file-model / 可见性只有一条规则). The ONE table: Rust reads it with include_str! (openmd-proto/src/opens_as.rs), the frontend imports it (src/lib/opensAs.ts). `document`: listed, opens as a markdown tab. `image`: listed, opens read-only in the viewer. A path whose extension (case-insensitive) is in neither list is NOT listed by the home file model, but an explicit open of it still opens as a document ($EDITOR temp files, COMMIT_EDITMSG). One new row here makes a type listed and openable everywhere. Gate: src/lib/opensAs.gate.test.ts.",
+  "document": ["md", "markdown", "mdx", "txt"],
+  "image": ["png", "jpg", "jpeg", "gif", "webp", "svg"]
+}

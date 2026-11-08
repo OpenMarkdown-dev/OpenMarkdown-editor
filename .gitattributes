@@ -1,0 +1,3 @@
+# The round-trip corpus: CRLF / BOM bytes are the point of these files, so git
+# must never convert them (src/editor/roundtripCheck.gate.test.ts reads them).
+fixtures/roundtrip/** -text

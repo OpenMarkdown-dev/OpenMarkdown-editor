@@ -1,0 +1,8 @@
+{
+  "name": "openmarkdown-editor-example-html-script",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npx --yes serve ."
+  }
+}

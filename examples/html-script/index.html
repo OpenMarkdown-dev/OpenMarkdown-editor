@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenMarkdown editor: plain HTML</title>
+    <!-- Framework-free is not build-free: this page needs the package on npm, for esm.sh to serve.
+         Unpublished package, or no CDN allowed? Build it once and serve the files yourself:
+         https://openmarkdown.dev/editor/docs/guides/self-hosting/ -->
+    <style>
+      #editor { height: 360px; border: 1px solid #d9d6cf; border-radius: 8px; overflow: hidden; }
+      #editor .cm-editor { height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div id="editor"></div>
+    <script type="module">
+      import { createEditorState, mountEditor } from "https://esm.sh/@openmarkdown-dev/editor@0.1.0";
+
+      mountEditor(
+        document.getElementById("editor"),
+        createEditorState({
+          doc: "# Hello\n\nThis editor came from a CDN. No framework, no bundler.\n\n- [ ] Try a checkbox\n- **Bold** and `code` render as you type\n",
+        }),
+      );
+    </script>
+  </body>
+</html>

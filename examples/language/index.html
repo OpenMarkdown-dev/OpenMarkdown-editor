@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenMarkdown editor: UI language</title>
+    <style>
+      #lang { margin-bottom: 10px; font: 14px system-ui, sans-serif; }
+      #editor { height: 340px; border: 1px solid #d9d6cf; border-radius: 8px; overflow: hidden; }
+      #editor .cm-editor { height: 100%; }
+    </style>
+  </head>
+  <body>
+    <label id="lang">
+      Editor language
+      <select id="language">
+        <option value="en">English</option>
+        <option value="zh">中文</option>
+        <option value="ja">日本語</option>
+        <option value="ko">한국어</option>
+      </select>
+    </label>
+    <div id="editor"></div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
