@@ -193,6 +193,51 @@ export const undoLanding: Extension = ViewPlugin.define((view) => ({
   },
 }));
 
+// --- R2c: no caret stranded inside a B block -----------------------------------
+
+/**
+ * A B block renders as one widget the caret cannot sit in, so a body caret
+ * strictly inside its range — with none of its parts open — has no place on
+ * screen: the browser puts its own caret after the widget, and the next key
+ * types THERE while the state says otherwise. The usual way in: typing on the
+ * line right under a table, which GFM makes a row of it (the table grows over
+ * the caret). R2b covers undo; this is the same landing for every other
+ * transaction: enter the part that holds the caret, at the caret.
+ *
+ * Returns the block and position to enter, or null. Edges are fine (before or
+ * after the widget); so is any caret while a part edit is open (the part owns
+ * the keys), and anything in source mode (no provider, nothing rendered).
+ */
+export function strandedIn(state: EditorState): { block: CaretBlock; pos: number } | null {
+  const hooks = state.facet(blockCaret);
+  if (!hooks) return null;
+  const sel = state.selection.main;
+  if (!sel.empty) return null;
+  const pos = sel.head;
+  const block = hooks.editable(state).find((b) => b.from < pos && pos < b.to);
+  if (!block || hooks.leave(state).length > 0) return null;
+  return { block, pos };
+}
+
+/**
+ * R2c, installed once in the main editor: after any update but an undo / redo
+ * (R2b lands those), a stranded caret enters its part. After the update, in a
+ * microtask, like the undo landing (an update may not dispatch).
+ */
+export const strandedCaret: Extension = ViewPlugin.define((view) => ({
+  update(u: ViewUpdate) {
+    if (!u.docChanged && !u.selectionSet) return;
+    if (u.transactions.some((tr) => tr.isUserEvent("undo") || tr.isUserEvent("redo"))) return;
+    if (!strandedIn(u.state)) return;
+    queueMicrotask(() => {
+      if (!view.dom.isConnected || view.state !== u.state || view.composing) return;
+      const hit = strandedIn(view.state);
+      const hooks = view.state.facet(blockCaret);
+      if (hit && hooks) hooks.enterAt(view, hit.block, hit.pos);
+    });
+  },
+}));
+
 // --- R3: user navigation ---------------------------------------------------------
 
 /**

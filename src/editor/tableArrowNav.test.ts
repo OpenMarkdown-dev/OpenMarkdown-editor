@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { flattenCellInsert, parseTable, tableArrowNav } from "./tableEdit";
+import { flattenCellInsert, parseTable, tableArrowNav, tableCellInsert } from "./tableEdit";
 
 // 3 rows (header + 2 body), 3 columns; the last body row is short (2 cells).
 const p = parseTable(["| a | b | c |", "| - | - | - |", "| 1 | 2 | 3 |", "| x | y |"].join("\n"), 0)!;
@@ -33,5 +33,27 @@ describe("flattenCellInsert", () => {
   });
   it("leaves single-line text alone", () => {
     expect(flattenCellInsert("plain **bold**")).toBe("plain **bold**");
+  });
+});
+
+describe("tableCellInsert (what a GFM cell can hold)", () => {
+  it("escapes a typed pipe so it stays inside the cell", () => {
+    expect(tableCellInsert("|", "Type a word")).toBe("\\|");
+    expect(tableCellInsert("a|b", "")).toBe("a\\|b");
+  });
+  it("leaves an already escaped pipe alone (the backslash may come before the insert)", () => {
+    expect(tableCellInsert("|", "a\\")).toBe("|");
+    expect(tableCellInsert("a\\|b", "")).toBe("a\\|b");
+  });
+  it("escapes a pipe after an escaped backslash", () => {
+    expect(tableCellInsert("|", "a\\\\")).toBe("\\|");
+  });
+  it("flattens line breaks as before", () => {
+    expect(tableCellInsert("a\nb|c", "")).toBe("a b\\|c");
+  });
+  it("round-trips through the table parser as one cell", () => {
+    const cell = "x" + tableCellInsert("a|b", "x");
+    const t = parseTable(`| h |\n| - |\n| ${cell} |`, 0)!;
+    expect(t.rows[t.rows.length - 1].cells.length).toBe(1);
   });
 });

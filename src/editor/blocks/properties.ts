@@ -15,6 +15,7 @@ import { finalizeValue, parseProps, type ParsedProps, type Prop } from "../front
 import { frontmatterRange } from "../headingIndex";
 import { exitBlock } from "./exit";
 import { lineAfterBlock } from "./geometry";
+import { flattenCellInsert } from "../tableEdit";
 import { buildPartEditor, partEditorIn, placePartCaret, reseedPart, type PartCaret } from "./partEditor";
 import type { BlockEntry } from "./types";
 
@@ -326,7 +327,7 @@ class PropertiesWidget extends WidgetType {
         },
         onKey: (e) => this.onKey(e, view, index, part),
       },
-      { singleLine: true, caret: view.state.field(activePropField, false)?.caret },
+      { accept: flattenCellInsert, caret: view.state.field(activePropField, false)?.caret },
     );
     return host;
   }

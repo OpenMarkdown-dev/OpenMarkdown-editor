@@ -16,8 +16,8 @@ const editor = mountEditor(document.getElementById("editor")!, createEditorState
 const bytes = saveMarkdownFile(editor.getDoc(), file); // unedited: the file's own bytes
 ```
 
+- **Lossless round-trip:** open a Markdown file and save it without editing, and the file is byte-for-byte what it was. What an edit may rewrite is listed under [Fidelity](#fidelity), and the [fidelity page](https://openmarkdown.dev/editor/docs/fidelity/) has a check you can run yourself.
 - **Live preview:** headings, lists, tables, math, Mermaid diagrams, callouts and YAML properties render in place; the Markdown shows under the caret.
-- **Your file stays yours:** open and save without editing, and the file is byte-for-byte what it was.
 - **Tables in place:** edit a cell where it is drawn.
 - **Images:** paste or drop them in, drag a corner to resize.
 - **Framework-free:** plain TypeScript and DOM. Works with React, Vue, Svelte or nothing. Not build-free: with no bundler, [self-host it](https://github.com/OpenMarkdown-dev/OpenMarkdown-editor/blob/main/docs/guides/self-hosting.md).

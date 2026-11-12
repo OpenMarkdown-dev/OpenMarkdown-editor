@@ -6,7 +6,7 @@ import { dialectBase, dialectExtensions } from "./dialectParser";
 import { blockDecorationField } from "./blocks/field";
 import { livePreviewConfig } from "./previewConfig";
 import { withCompleteTree } from "./syntax";
-import { undoLandingOf } from "./caret";
+import { strandedIn, undoLandingOf } from "./caret";
 import { activeEditField, setActiveEdit, tableInlineEdit } from "./tableInlineEdit";
 import { activePropField, propAt, propertiesState, parsePropsOf, setActiveProp } from "./blocks/properties";
 
@@ -244,5 +244,30 @@ describe("propAt — the part an undo landing re-enters (caret-rules R2b)", () =
   });
   it("the opening fence goes to the first row", () => {
     expect(propAt(p, 1)).toEqual({ index: 0, part: "key" });
+  });
+});
+
+describe("R2c · a caret stranded inside a B block re-enters it (strandedIn)", () => {
+  const TABLE = "| a | b |\n| - | - |\n| 1 | 2 |\n";
+  const DOC = `${TABLE}\n[Docs](x)\n\n## Next\n`;
+  const blank = TABLE.length; // the blank line right under the table
+
+  it("typing on the line right under a table (which GFM makes a row) leaves the caret in that row's cell", () => {
+    const before = live(DOC, blank);
+    expect(strandedIn(before)).toBeNull();
+    const after = withCompleteTree(before.update({ changes: { from: blank, insert: "N" }, selection: { anchor: blank + 1 }, userEvent: "input.type" }).state);
+    const hit = strandedIn(after);
+    expect(hit).not.toBeNull();
+    expect(hit!.block.id).toBe("table");
+    expect(hit!.pos).toBe(blank + 1);
+  });
+
+  it("is null at the table's edges, with a cell open, and in source mode", () => {
+    expect(strandedIn(live(DOC, 0))).toBeNull();
+    expect(strandedIn(live(DOC, TABLE.length - 1))).toBeNull();
+    const inside = live(DOC, 3);
+    const open = inside.update({ effects: setActiveEdit.of({ tableFrom: 0, row: 0, col: 0 }) }).state;
+    expect(strandedIn(open)).toBeNull();
+    expect(strandedIn(source(DOC, 3))).toBeNull();
   });
 });

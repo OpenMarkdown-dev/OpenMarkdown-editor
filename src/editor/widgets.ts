@@ -6,6 +6,7 @@ import {
   parseTable,
   tableArrowNav,
   tableGridNav,
+  tableCellInsert,
   type Align,
 } from "./tableEdit";
 import { activeEditField, cellSync, setActiveEdit } from "./tableInlineEdit";
@@ -504,7 +505,7 @@ export class TableWidget extends WidgetType {
         },
         onKey: (e, part) => this.onCellKey(e, view, part, row, col),
       },
-      { singleLine: true, caret },
+      { accept: tableCellInsert, caret },
     );
     if (align && align !== "none") host.style.textAlign = align;
     return host;

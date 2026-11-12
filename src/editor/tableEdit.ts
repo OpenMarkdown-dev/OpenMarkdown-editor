@@ -729,3 +729,22 @@ export function tableArrowNav(
 export function flattenCellInsert(text: string): string {
   return text.replace(/\r?\n/g, " ");
 }
+
+/**
+ * What a GFM table cell can hold, applied to text typed or pasted into one
+ * (`before` = the cell's text before the insertion point): one line, and no
+ * bare `|` — a bare pipe IS the column separator, so it would split the cell in
+ * the source. It is written `\|`, the table's own escape (rendered as `|`).
+ * A pipe already escaped — by a backslash in the insert or right before it — is
+ * left alone; a backslash that is itself escaped (`\\`) does not count.
+ */
+export function tableCellInsert(text: string, before: string): string {
+  let run = /\\*$/.exec(before)![0].length;
+  let out = "";
+  for (const ch of flattenCellInsert(text)) {
+    if (ch === "|" && run % 2 === 0) out += "\\";
+    out += ch;
+    run = ch === "\\" ? run + 1 : 0;
+  }
+  return out;
+}

@@ -7,6 +7,18 @@ while the version is 0.x, a minor version may change the public API
 The top entry's version must equal `package.json`'s: the export and the release workflow
 both refuse to publish otherwise.
 
+## 0.1.1 — 2026-11-13
+
+- Tables: typing on the line right under a table no longer leaves the caret inside the
+  rendered table. The typed line becomes the table's new last row (as GFM reads it), and the
+  whole line goes into that row's cell.
+- Tables: a `|` typed or pasted into a cell is written as `\|`, so the table keeps its
+  columns.
+- Tables and properties: keys typed right after clicking into a cell or a value land in it;
+  the first few were sometimes dropped.
+- README: the lossless round-trip definition is now the first feature, linked to the fidelity page.
+- Examples and the home page's script snippet use 0.1.1.
+
 ## 0.1.0 — 2026-11-12
 
 First public release, extracted from the [OpenMarkdown](https://openmarkdown.dev) app.

@@ -1,11 +1,10 @@
-import { Annotation, EditorState, Prec, Transaction } from "@codemirror/state";
+import { Annotation, EditorSelection, EditorState, Prec, Transaction } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { standardKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { dialectBase, dialectExtensions } from "../dialectParser";
 import { livePreviewConfig } from "../previewConfig";
 import { markdownHighlighting } from "../theme";
-import { flattenCellInsert } from "../tableEdit";
 import { nestedEditorBase, nestedPreview } from "./nested";
 
 /**
@@ -29,8 +28,13 @@ export interface PartEditorHooks {
 }
 
 export interface PartEditorOptions {
-  /** Flatten pasted / typed line breaks into spaces (a GFM cell is one line). */
-  singleLine?: boolean;
+  /**
+   * What the part can hold: every typed or pasted insert passes through it
+   * (`before` = the part's text before the insertion point) — the ONE place a
+   * block says what its part accepts. A table cell flattens line breaks and
+   * escapes pipes (`tableCellInsert`); a property value flattens line breaks.
+   */
+  accept?: (inserted: string, before: string) => string;
   /**
    * Where the caret lands on entry; "all" selects the whole part (a new name); a
    * number is an offset into the part (an undo landing there, caret-rules R2b).
@@ -92,21 +96,8 @@ export function buildPartEditor(
             },
           }),
         ),
-        opts.singleLine
-          ? EditorState.transactionFilter.of((tr) => {
-              let broken = false;
-              tr.changes.iterChanges((_a, _b, _c, _d, inserted) => {
-                if (/\r?\n/.test(inserted.toString())) broken = true;
-              });
-              if (!broken) return tr;
-              // Re-issue the same changes with line breaks flattened; the caret
-              // maps through them as it would have.
-              const changes: { from: number; to: number; insert: string }[] = [];
-              tr.changes.iterChanges((fromA, toA, _b, _c, inserted) => {
-                changes.push({ from: fromA, to: toA, insert: flattenCellInsert(inserted.toString()) });
-              });
-              return { changes, selection: tr.selection, userEvent: tr.annotation(Transaction.userEvent) };
-            })
+        opts.accept
+          ? acceptFilter(opts.accept)
           : [],
         EditorView.updateListener.of((u) => {
           if (!u.docChanged) return;
@@ -134,9 +125,12 @@ export function buildPartEditor(
   });
   parts.set(host, view);
 
-  // setTimeout, not requestAnimationFrame: rAF never fires in a hidden tab, and
-  // the widget DOM is not attached yet when toDOM returns.
-  setTimeout(() => {
+  // A microtask: it runs once the dispatch that built this widget has attached
+  // its DOM (toDOM returns before that) and BEFORE the next input event, so a
+  // key typed right after the click / entry lands in the part, never in the
+  // body (whose DOM caret sits after the block). Not rAF, which never fires in a
+  // hidden tab; not setTimeout, which lets keys through in between.
+  queueMicrotask(() => {
     if (!host.isConnected) return;
     const selection = entrySelection(opts.caret, view.state.doc.length, pointerPlaced);
     if (!selection) return;
@@ -182,5 +176,36 @@ export function reseedPart(view: EditorView, text: string): void {
     changes: { from: 0, to: view.state.doc.length, insert: text },
     selection: { anchor: Math.min(view.state.selection.main.head, text.length) },
     annotations: reseed.of(true),
+  });
+}
+
+/**
+ * Re-issue a transaction's inserts through `accept` when it would change any
+ * of them. The caret maps through the rewritten changes as it did through the
+ * originals (a caret after the typed text stays after the accepted text).
+ */
+function acceptFilter(accept: (inserted: string, before: string) => string) {
+  return EditorState.transactionFilter.of((tr) => {
+    if (!tr.docChanged) return tr;
+    const changes: { from: number; to: number; insert: string }[] = [];
+    let rewritten = false;
+    tr.changes.iterChanges((fromA, toA, _b, _c, inserted) => {
+      const text = inserted.toString();
+      const ok = accept(text, tr.startState.sliceDoc(0, fromA));
+      if (ok !== text) rewritten = true;
+      changes.push({ from: fromA, to: toA, insert: ok });
+    });
+    if (!rewritten) return tr;
+    const next = tr.startState.changes(changes);
+    const back = tr.changes.invert(tr.startState.doc);
+    const selection = tr.selection
+      ? EditorSelection.create(
+          tr.selection.ranges.map((r) =>
+            EditorSelection.range(next.mapPos(back.mapPos(r.anchor, -1), 1), next.mapPos(back.mapPos(r.head, -1), 1)),
+          ),
+          tr.selection.mainIndex,
+        )
+      : undefined;
+    return { changes: next, selection, userEvent: tr.annotation(Transaction.userEvent) };
   });
 }

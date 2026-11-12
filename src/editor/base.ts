@@ -27,7 +27,7 @@ import { settleTreeOnKey } from "./syntax";
 import { listFoldService, listFoldToggle } from "./listFold";
 import { revealFlash } from "./revealFlash";
 import { imagePaste } from "./imagePaste";
-import { undoLanding } from "./caret";
+import { strandedCaret, undoLanding } from "./caret";
 import { changedRange } from "./docDiff";
 import { refreshImagesEffect } from "./imageRefresh";
 import { linkAutocomplete } from "./linkComplete";
@@ -285,6 +285,7 @@ export function buildEditorState(options: EditorStateOptions, loadMermaid: Merma
         // Undo / redo land at the change, not at history's old caret (spec:
         // caret-rules R2 / R2a / R2b) — one filter for every undo entry point.
         undoLanding,
+        strandedCaret,
         drawSelection(),
         // Drop caret: draws a cursor at the drop position while dragging over the
         // editor, so a sidebar file drag (sidebar-drag-link) shows exactly where
