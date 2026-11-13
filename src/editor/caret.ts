@@ -204,8 +204,14 @@ export const undoLanding: Extension = ViewPlugin.define((view) => ({
  * the caret). R2b covers undo; this is the same landing for every other
  * transaction: enter the part that holds the caret, at the caret.
  *
- * Returns the block and position to enter, or null. Edges are fine (before or
- * after the widget); so is any caret while a part edit is open (the part owns
+ * The END edge counts as inside: a caret there is drawn after the widget, on
+ * the next line, yet a key typed there extends the block's last line — exactly
+ * what happens when typing under a table makes the typed line its last row
+ * (N8 keeps a blank line after it; change: separator-keeps-blocks). Leaving a
+ * block on purpose never lands there (`exitBlock` goes to the next line start).
+ *
+ * Returns the block and position to enter, or null. The start edge is fine
+ * (before the widget); so is any caret while a part edit is open (the part owns
  * the keys), and anything in source mode (no provider, nothing rendered).
  */
 export function strandedIn(state: EditorState): { block: CaretBlock; pos: number } | null {
@@ -214,7 +220,7 @@ export function strandedIn(state: EditorState): { block: CaretBlock; pos: number
   const sel = state.selection.main;
   if (!sel.empty) return null;
   const pos = sel.head;
-  const block = hooks.editable(state).find((b) => b.from < pos && pos < b.to);
+  const block = hooks.editable(state).find((b) => b.from < pos && pos <= b.to);
   if (!block || hooks.leave(state).length > 0) return null;
   return { block, pos };
 }

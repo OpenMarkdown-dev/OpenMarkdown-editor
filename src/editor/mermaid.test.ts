@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { markdown } from "@codemirror/lang-markdown";
 import { blockDecorationField, blockRanges } from "./blocks/field";
+import { isRevealed } from "./blocks/reveal";
+import { MermaidRequests, drawnMermaidBodies } from "./blocks/mermaid";
 import { attemptRenderAsync } from "./blocks/render";
 import { dialectBase, dialectExtensions } from "./dialectParser";
 import {
@@ -16,6 +18,7 @@ import {
   type MermaidModule,
   rememberMermaid,
   renderWith,
+  requestMermaid,
   shownMermaid,
 } from "./mermaid";
 import { mermaidMarkup } from "./markup";
@@ -235,5 +238,168 @@ describe("attemptRenderAsync — the async sibling of attemptRender", () => {
       kind: "failed",
       reason: "later",
     });
+  });
+});
+
+// --- Only drawn blocks are rendered; stale sources are dropped (change: mermaid-render-drawn-only) ---
+
+/**
+ * One fake Mermaid for the whole file: the module-level loader caches the first
+ * module it loads, so every request below shares this one. It records each body
+ * it is asked to render.
+ */
+const renders: string[] = [];
+const fakeMermaid: MermaidModule = {
+  initialize: () => {},
+  mermaidAPI: {
+    getSiteConfig: () => ({}),
+    render: async (_id, text) => {
+      renders.push(text);
+      return { svg: '<svg id="om-mermaid-1"/>' };
+    },
+  },
+};
+const fakeLoad = async () => fakeMermaid;
+/** Let the render queue run dry: every step in it is a microtask. */
+const settle = () => new Promise((r) => setTimeout(r, 0));
+
+describe("isRevealed — the one rule for which A blocks are drawn", () => {
+  const d = "para\n\n```mermaid\ngraph TD\n  a --> b\n```\n\nend\n";
+  const range = { from: d.indexOf("```"), to: d.indexOf("\n\nend") };
+
+  it("the selection touching the range reveals it; elsewhere it does not", () => {
+    expect(isRevealed(state(d, { anchor: d.indexOf("a -->") }), range)).toBe(true);
+    expect(isRevealed(state(d, { anchor: d.length }), range)).toBe(false);
+  });
+
+  it("revealFrom narrows what the selection must touch; reading mode reveals nothing", () => {
+    expect(isRevealed(state(d, { anchor: range.from }), { ...range, revealFrom: range.from + 4 })).toBe(false);
+    expect(isRevealed(state(d, { reveal: false, anchor: d.indexOf("a -->") }), range)).toBe(false);
+  });
+});
+
+describe("drawnMermaidBodies — the driver asks only for drawn diagrams", () => {
+  const body = "graph TD\n  drawn --> only";
+  const d = `para\n\n\`\`\`mermaid\n${body}\n\`\`\`\n\nend\n`;
+  const all = { from: 0, to: d.length };
+
+  it("selection inside the fence → nothing to ask for; outside → its body", () => {
+    expect(drawnMermaidBodies(state(d, { anchor: d.indexOf("drawn") }), all)).toEqual([]);
+    expect(drawnMermaidBodies(state(d), all)).toEqual([body]);
+  });
+
+  it("reading mode draws every diagram, so it asks for every one (design D4)", () => {
+    expect(drawnMermaidBodies(state(d, { reveal: false, anchor: d.indexOf("drawn") }), all)).toEqual([body]);
+  });
+
+  it("those in view first", () => {
+    const two = `\`\`\`mermaid\ngraph TD\n  far --> one\n\`\`\`\n\nx\n\n\`\`\`mermaid\ngraph TD\n  near --> one\n\`\`\`\n\nend\n`;
+    const near = two.indexOf("x\n");
+    expect(drawnMermaidBodies(state(two), { from: near, to: two.length })).toEqual([
+      "graph TD\n  near --> one",
+      "graph TD\n  far --> one",
+    ]);
+  });
+});
+
+describe("requestMermaid — a queued render nobody still wants is dropped (design D2)", () => {
+  beforeEach(() => {
+    renders.length = 0;
+  });
+
+  it("three bodies in a row, only the last still wanted → one render, the last", async () => {
+    let want = "";
+    const bodies = ["graph TD\n  q --> 1", "graph TD\n  q --> 12", "graph TD\n  q --> 123"];
+    for (const b of bodies) {
+      want = b;
+      requestMermaid(b, "light", fakeLoad, () => {}, () => want === b);
+    }
+    await settle();
+    expect(renders).toEqual([bodies[2]]);
+    expect(cachedMermaid(bodies[2], "light")?.kind).toBe("rendered");
+    expect(cachedMermaid(bodies[0], "light")).toBeUndefined();
+    // Dropped is not stuck: asked again (and wanted), it renders.
+    requestMermaid(bodies[0], "light", fakeLoad, () => {}, () => true);
+    await settle();
+    expect(renders).toEqual([bodies[2], bodies[0]]);
+  });
+
+  it("any waiter still wanting it is enough (another view of the same document)", async () => {
+    const b = "graph TD\n  two --> views";
+    requestMermaid(b, "light", fakeLoad, () => {}, () => false);
+    requestMermaid(b, "light", fakeLoad, () => {}, () => true);
+    await settle();
+    expect(renders).toEqual([b]);
+  });
+});
+
+describe("the driver: typing in a revealed diagram renders nothing (spec: block-editing / 异步渲染的块)", () => {
+  beforeEach(() => {
+    renders.length = 0;
+  });
+
+  const loaded = mermaidLoader.of(fakeLoad);
+  const type = (s: EditorState, text: string) => withCompleteTree(s.update({ changes: { from: s.selection.main.head, insert: text }, selection: { anchor: s.selection.main.head + text.length } }).state);
+  const del = (s: EditorState, n: number) => withCompleteTree(s.update({ changes: { from: s.selection.main.head - n, to: s.selection.main.head }, selection: { anchor: s.selection.main.head - n } }).state);
+  const leave = (s: EditorState) => s.update({ selection: { anchor: s.doc.length } }).state;
+  const view = (s: EditorState) => ({ from: 0, to: s.doc.length });
+
+  it("在展开的图里打字不渲染: 5 chars typed inside → 0 renders; leaving → exactly 1, of the final source", async () => {
+    const d = "para\n\n```mermaid\ngraph TD\n  type --> here\n```\n\nend\n";
+    let s = state(d, { anchor: d.indexOf(" here") + " here".length }, loaded);
+    const driver = new MermaidRequests(() => {});
+    driver.request(s, view(s));
+    for (const ch of "abcde") {
+      s = type(s, ch);
+      driver.request(s, view(s));
+    }
+    await settle();
+    expect(renders).toEqual([]);
+    s = leave(s);
+    driver.request(s, view(s));
+    await settle();
+    expect(renders).toEqual(["graph TD\n  type --> hereabcde"]);
+  });
+
+  it("离开前改回原样: typed then deleted inside a cached diagram, leaving → 0 renders", async () => {
+    const body = "graph TD\n  back --> again";
+    const d = `para\n\n\`\`\`mermaid\n${body}\n\`\`\`\n\nend\n`;
+    rememberMermaid(body, "light", { kind: "rendered", value: svg("again") });
+    let s = state(d, { anchor: d.indexOf(" again") + " again".length }, loaded);
+    const driver = new MermaidRequests(() => {});
+    driver.request(s, view(s));
+    s = type(s, "xyz");
+    driver.request(s, view(s));
+    s = del(s, 3);
+    driver.request(s, view(s));
+    s = leave(s);
+    driver.request(s, view(s));
+    await settle();
+    expect(renders).toEqual([]);
+    expect(rendered(s).blocks).toEqual(["mermaid:A"]);
+  });
+
+  it("a source edited past while its render was queued is not rendered (not revealed: e.g. an agent's edits)", async () => {
+    const d = "```mermaid\ngraph TD\n  agent --> v0\n```\n\nend\n";
+    let s = state(d, {}, loaded);
+    const driver = new MermaidRequests(() => {});
+    driver.request(s, view(s));
+    for (const v of ["v1", "v2"]) {
+      const at = s.doc.toString().indexOf("v");
+      s = withCompleteTree(s.update({ changes: { from: at, to: at + 2, insert: v } }).state);
+      driver.request(s, view(s));
+    }
+    await settle();
+    expect(renders).toEqual(["graph TD\n  agent --> v2"]);
+  });
+
+  it("a destroyed driver wants nothing", async () => {
+    const d = "```mermaid\ngraph TD\n  gone --> away\n```\n\nend\n";
+    const s = state(d, {}, loaded);
+    const driver = new MermaidRequests(() => {});
+    driver.request(s, view(s));
+    driver.destroy();
+    await settle();
+    expect(renders).toEqual([]);
   });
 });

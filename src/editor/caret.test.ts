@@ -262,9 +262,15 @@ describe("R2c · a caret stranded inside a B block re-enters it (strandedIn)", (
     expect(hit!.pos).toBe(blank + 1);
   });
 
-  it("is null at the table's edges, with a cell open, and in source mode", () => {
+  it("a caret on the table's END edge is stranded too (drawn after the widget, it would type on the next line)", () => {
+    const hit = strandedIn(live(DOC, TABLE.length - 1));
+    expect(hit?.block.id).toBe("table");
+    expect(hit?.pos).toBe(TABLE.length - 1);
+  });
+
+  it("is null at the table's start, on the line after it, with a cell open, and in source mode", () => {
     expect(strandedIn(live(DOC, 0))).toBeNull();
-    expect(strandedIn(live(DOC, TABLE.length - 1))).toBeNull();
+    expect(strandedIn(live(DOC, TABLE.length))).toBeNull();
     const inside = live(DOC, 3);
     const open = inside.update({ effects: setActiveEdit.of({ tableFrom: 0, row: 0, col: 0 }) }).state;
     expect(strandedIn(open)).toBeNull();

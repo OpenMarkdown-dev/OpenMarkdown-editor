@@ -140,8 +140,11 @@ export const CACHE_LIMIT = 64;
 
 const cacheKey = (body: string, scheme: ColorScheme) => `${scheme}\n${body}`;
 const cache = new Map<string, RenderResult<SafeMarkup>>();
-/** Renders in flight → everyone waiting on each (a view torn down and rebuilt mid-render still hears). */
-const inflight = new Map<string, Set<() => void>>();
+/**
+ * Renders in flight → everyone waiting on each (a view torn down and rebuilt
+ * mid-render still hears), each with whether it still wants the result.
+ */
+const inflight = new Map<string, Map<() => void, () => boolean>>();
 
 /** Remember a finished render (also how tests seed a rendered sample). */
 export function rememberMermaid(body: string, scheme: ColorScheme, result: RenderResult<SafeMarkup>): void {
@@ -279,24 +282,40 @@ export function mermaidReason(e: unknown): string {
  * Ask for (body, scheme) to be rendered. Once it has — rendered or failed —
  * `done` runs (asynchronously) so the caller can redraw. Already cached: nothing
  * to do. Already in flight: `done` joins its waiters. A failed load calls nothing.
+ *
+ * `wanted` says whether this caller still wants this exact (body, scheme). It is
+ * asked when the render's turn in the queue comes: if no waiter still wants it
+ * (a source typed past, a view closed), the render is dropped unrun and nobody
+ * is called — a later request starts it afresh (change: mermaid-render-drawn-only,
+ * design D2; spec: block-editing / 异步渲染的块, 不渲染过时的源码).
  */
-export function requestMermaid(body: string, scheme: ColorScheme, load: MermaidLoader, done: () => void): void {
+export function requestMermaid(
+  body: string,
+  scheme: ColorScheme,
+  load: MermaidLoader,
+  done: () => void,
+  wanted: () => boolean,
+): void {
   const key = cacheKey(body, scheme);
   if (cache.has(key)) return;
   const waiting = inflight.get(key);
   if (waiting) {
-    waiting.add(done);
+    waiting.set(done, wanted);
     return;
   }
-  const waiters = new Set([done]);
+  const waiters = new Map([[done, wanted]]);
   inflight.set(key, waiters);
   queue = queue.then(async () => {
     const mermaid = await loadMermaid(load);
-    inflight.delete(key);
-    if (!mermaid) return;
+    if (!mermaid || ![...waiters.values()].some((w) => w())) {
+      inflight.delete(key);
+      return;
+    }
+    // Still in `inflight` while it renders: a request arriving now joins and hears.
     const result = await attemptRenderAsync(() => renderWith(mermaid, body, scheme));
     rememberMermaid(body, scheme, result);
+    inflight.delete(key);
     // Outside the chain: a waiter that throws must not stall the renders queued after it.
-    for (const fn of waiters) queueMicrotask(fn);
+    for (const fn of waiters.keys()) queueMicrotask(fn);
   });
 }

@@ -7,6 +7,19 @@ while the version is 0.x, a minor version may change the public API
 The top entry's version must equal `package.json`'s: the export and the release workflow
 both refuse to publish otherwise.
 
+## 0.1.2 — 2026-11-13
+
+- Tables: typing on the lone blank line between a table and the paragraph below no longer
+  pulls that paragraph into the table. The typed line becomes the table's new last row, a
+  line break is added after it, and the paragraph below stays separate. The same holds
+  between any two top-level blocks. This is a registered rewrite (README "Fidelity").
+- Tables: keys typed right after that new row appears go into its cell instead of landing
+  one per line below the table.
+- Mermaid: a diagram whose source is open is no longer re-rendered on each keystroke; it
+  renders once when the caret leaves. A queued render for source nobody shows any more is
+  skipped. Large diagrams no longer freeze typing.
+- Examples and the home page's script snippet use 0.1.2.
+
 ## 0.1.1 — 2026-11-13
 
 - Tables: typing on the line right under a table no longer leaves the caret inside the

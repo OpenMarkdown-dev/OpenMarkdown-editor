@@ -8,6 +8,7 @@ import { coveredBySelection, withSelectedState } from "../selectionPaint";
 import { setActiveEdit } from "../tableInlineEdit";
 import { setActiveProp, setPropsSource } from "./properties";
 import { blockCaret } from "../caret";
+import { isRevealed } from "./reveal";
 import { BLOCKS, BLOCKS_BY_NODE, blockEntry } from "./registry";
 import { asyncRenderDone, attemptRender, failedSourceMark } from "./render";
 import type { BlockCandidate, BlockEntry, BlockRange } from "./types";
@@ -16,8 +17,8 @@ import type { BlockCandidate, BlockEntry, BlockRange } from "./types";
  * The ONE place block-level replacements are made (spec: block-editing / 块级渲染
  * 只经注册表产生). CM6 requires block decorations to come from a StateField, not
  * a ViewPlugin, so every A / B entry is collected here and the reveal rule for A
- * is decided once, not per block. Every entry's `widget` runs through
- * `attemptRender` (change: block-fallback, design D1): a widget that throws
+ * (`isRevealed`, `./reveal.ts`) is applied once, not per block. Every entry's
+ * `widget` runs through `attemptRender` (change: block-fallback, design D1): a widget that throws
  * leaves its source in place with the failure mark.
  *
  * The failure marks are a SECOND set (design D6): the replacements are also the
@@ -34,12 +35,8 @@ function buildBlockDecorations(state: EditorState): BlockDecorations {
   const deco: Range<Decoration>[] = [];
   const failed: Range<Decoration>[] = [];
 
-  const revealed = (c: BlockCandidate) =>
-    config.revealOnSelection &&
-    state.selection.ranges.some((r) => r.from <= c.to && r.to >= (c.revealFrom ?? c.from));
-
   const push = (entry: BlockEntry, c: BlockCandidate) => {
-    if (entry.mode === "A" && revealed(c)) return;
+    if (entry.mode === "A" && isRevealed(state, c)) return;
     deco.push(
       Decoration.replace({
         // Every block carries its selected state from here, the one exit, so no
@@ -67,7 +64,7 @@ function buildBlockDecorations(state: EditorState): BlockDecorations {
       const range = entry.range(state, node);
       if (!range) return false;
       // A: check the reveal BEFORE building the widget — rendering (math) costs.
-      if (entry.mode === "A" && revealed({ ...range, widget: null as never })) return false;
+      if (entry.mode === "A" && isRevealed(state, range)) return false;
       const widget = entry.widget;
       const out = attemptRender(() => widget(state, node, range));
       if (out.kind === "rendered") push(entry, { ...range, widget: out.value });
