@@ -72,3 +72,64 @@ describe("parseCallout — the suffix (registry row callout-fold; recognised, ne
     }
   });
 });
+
+/**
+ * Gate (spec: live-preview-editor / callout 类型只有一个登记处; change:
+ * write-back-valid, design D7). The five types are listed once, `CALLOUT_TYPES`
+ * in `callout.ts`; recognition, rendering, the insert command and the HTML
+ * render read it. Fails, with file:line, on a non-test source file in `src/`
+ * other than `callout.ts` holding two or more type keywords in one regex
+ * alternation / union (`note|tip`, `"note" | "tip"`) or one array literal
+ * (`["note", "tip"]`).
+ *
+ * Limits (stated, not hidden): textual and per line. Comments are stripped; an
+ * array spread over several lines, one keyword each, is not seen; the browser
+ * harness and fixtures are not scanned.
+ */
+describe("callout registry gate", () => {
+  const KW = "(?:note|tip|important|warning|caution)";
+  const ALTERNATION = new RegExp(`["'\`]?\\b${KW}\\b["'\`]?\\s*\\|\\s*["'\`]?\\b${KW}\\b`, "i");
+  const QUOTED = new RegExp(`["'\`]${KW}["'\`]`, "gi");
+
+  const strip = (code: string) =>
+    code.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " ")).replace(/(^|[^:"'`\\])\/\/.*$/gm, "$1");
+
+  function violations(files: { path: string; code: string }[]): string[] {
+    const found: string[] = [];
+    for (const { path, code } of files) {
+      if (path === "editor/callout.ts" || path.startsWith("dev/harness/")) continue;
+      strip(code)
+        .split("\n")
+        .forEach((line, i) => {
+          const arrays = line.match(/\[[^[\]]*\]/g) ?? [];
+          const listed = arrays.some((a) => (a.match(QUOTED) ?? []).length >= 2);
+          if (listed || ALTERNATION.test(line)) found.push(`${path}:${i + 1}: a second list of callout types`);
+        });
+    }
+    return found;
+  }
+
+  it("callout types are listed in src/editor/callout.ts and nowhere else", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { listFiles, repoPath } = await import("../../scripts/lib/repoFiles.mjs");
+    const SRC = join(__dirname, "..");
+    const files = listFiles(SRC, { include: /\.tsx?$/, exclude: /\.test\.tsx?$/ }).map((p: string) => ({
+      path: repoPath(SRC, p),
+      code: readFileSync(p, "utf8"),
+    }));
+    expect(files.some((f) => f.path === "editor/callout.ts")).toBe(true);
+    expect(violations(files)).toEqual([]);
+  });
+
+  it("catches each shape of a second list, and leaves single mentions alone", () => {
+    const probe = (code: string) => violations([{ path: "editor/x.ts", code }]);
+    expect(probe("const re = /\\[!(note|tip|warning)\\]/i;")).toEqual(["editor/x.ts:1: a second list of callout types"]);
+    expect(probe('const TYPES = ["note", "tip"];')).toHaveLength(1);
+    expect(probe('type T = "warning" | "caution";')).toHaveLength(1);
+    expect(probe('"cmd.insertCalloutNote": "插入 Callout:Note",')).toEqual([]);
+    expect(probe('if (kind === "note") return;')).toEqual([]);
+    expect(probe("// note | tip in a comment")).toEqual([]);
+    expect(violations([{ path: "editor/callout.ts", code: 'const CALLOUT_TYPES = ["note", "tip"];' }])).toEqual([]);
+  });
+});

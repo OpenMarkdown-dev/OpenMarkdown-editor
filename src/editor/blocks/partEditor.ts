@@ -1,11 +1,13 @@
 import { Annotation, EditorSelection, EditorState, Prec, Transaction } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { standardKeymap } from "@codemirror/commands";
+import { openSearchPanel } from "@codemirror/search";
 import { markdown } from "@codemirror/lang-markdown";
 import { dialectBase, dialectExtensions } from "../dialectParser";
 import { livePreviewConfig } from "../previewConfig";
 import { markdownHighlighting } from "../theme";
 import { nestedEditorBase, nestedPreview } from "./nested";
+import { scrollBoxIntoView } from "../caret";
 
 /**
  * The editor a B block puts in place of ONE editable part — a table cell, a
@@ -42,8 +44,12 @@ export interface PartEditorOptions {
   caret?: PartCaret;
 }
 
-/** Where a part editor's caret lands when it opens (spec: caret-rules R15). */
-export type PartCaret = "start" | "end" | "all" | number;
+/**
+ * Where a part editor's caret lands when it opens (spec: caret-rules R15). A
+ * `{ anchor, head }` range selects that text in the part (R2c: a Find match the
+ * body hands over when it takes the keys back).
+ */
+export type PartCaret = "start" | "end" | "all" | number | { anchor: number; head: number };
 
 /** Marks a reseed, so it is not echoed back to the document as an edit. */
 const reseed = Annotation.define<boolean>();
@@ -113,6 +119,11 @@ export function buildPartEditor(
         // so a part edits like the document does. The block's own keys (Enter,
         // Tab, arrows at an edge, undo) were offered to `onKey` first, above.
         keymap.of(standardKeymap),
+        // Find belongs to the document: Cmd+F in a part opens the document's
+        // panel (which then closes the part so its block paints every match —
+        // caret.ts `findTookKeys`), never a search of the part alone or, in a
+        // browser, the page's own find over a half-typed cell.
+        keymap.of(partFindKeymap(outer)),
         nestedEditorBase(),
         // No markdown keymap: a part's Enter / Backspace are standardKeymap's
         // (spec: structure-input — the body's structure keys stay out of blocks).
@@ -135,7 +146,13 @@ export function buildPartEditor(
     const selection = entrySelection(opts.caret, view.state.doc.length, pointerPlaced);
     if (!selection) return;
     view.focus();
-    view.dispatch({ selection });
+    // Scrolled into view (spec: caret-rules R8, 落点看得见 L2): the one place
+    // every part entry passes — Tab / Enter / arrows into a cell below the
+    // fold. A nested editor's scroll walks up to the outer scroller; `nearest`,
+    // so a cell entered by a click (already under the pointer) does not move.
+    // Then the part's whole box (a cell with its padding), in the outer scroller.
+    view.dispatch({ selection, scrollIntoView: true });
+    scrollBoxIntoView(outer, host.closest<HTMLElement>("td, th") ?? host);
   });
   return host;
 }
@@ -156,7 +173,9 @@ export function entrySelection(
 ): { anchor: number; head?: number } | null {
   if (pointerPlaced) return null;
   if (caret === "all") return { anchor: 0, head: end };
-  if (typeof caret === "number") return { anchor: Math.max(0, Math.min(caret, end)) };
+  const clamp = (n: number) => Math.max(0, Math.min(n, end));
+  if (typeof caret === "number") return { anchor: clamp(caret) };
+  if (typeof caret === "object") return { anchor: clamp(caret.anchor), head: clamp(caret.head) };
   return { anchor: caret === "start" ? 0 : end };
 }
 
@@ -164,8 +183,9 @@ export function entrySelection(
  * Put an open part editor's caret at `offset` and give it focus — the undo
  * landing re-entering the part that is already being edited (caret-rules R2b).
  */
-export function placePartCaret(view: EditorView, offset: number): void {
-  view.dispatch({ selection: { anchor: Math.max(0, Math.min(offset, view.state.doc.length)) } });
+export function placePartCaret(view: EditorView, offset: PartCaret): void {
+  const selection = entrySelection(offset, view.state.doc.length, false);
+  if (selection) view.dispatch({ selection });
   view.focus();
 }
 
@@ -208,4 +228,9 @@ function acceptFilter(accept: (inserted: string, before: string) => string) {
       : undefined;
     return { changes: next, selection, userEvent: tr.annotation(Transaction.userEvent) };
   });
+}
+
+/** The keys a part hands to the document's Find (spec: caret-rules / 落点看得见). */
+export function partFindKeymap(outer: EditorView): { key: string; run: () => boolean; preventDefault: true }[] {
+  return [{ key: "Mod-f", run: () => openSearchPanel(outer), preventDefault: true }];
 }

@@ -27,7 +27,7 @@ import { settleTreeOnKey } from "./syntax";
 import { listFoldService, listFoldToggle } from "./listFold";
 import { revealFlash } from "./revealFlash";
 import { imagePaste } from "./imagePaste";
-import { strandedCaret, undoLanding } from "./caret";
+import { findClosesParts, landingScroll, scrollLanding, strandedCaret, undoLanding } from "./caret";
 import { separatorKeepsBlocks } from "./separatorKeep";
 import { changedRange } from "./docDiff";
 import { refreshImagesEffect } from "./imageRefresh";
@@ -173,7 +173,9 @@ function modeExtensions(mode: EditorMode, wiring: PreviewWiring) {
         // readOnly gates commands and input handlers only — programmatic
         // view.dispatch still goes through (the checkbox widget's write-back in
         // reading mode relies on this). editable(false) drops contenteditable so
-        // the cursor disappears and the IME can't engage (spec: 阅读模式).
+        // the native caret is gone and the IME can't engage (spec: 阅读模式);
+        // the caret drawSelection() draws is hidden by `noCaret` below (spec:
+        // caret-rules / 落点看得见, L3).
         EditorState.readOnly.of(true),
         EditorView.editable.of(false),
         // Keep the content focusable so Cmd+F and keyboard scrolling still work.
@@ -201,6 +203,19 @@ function modeExtensions(mode: EditorMode, wiring: PreviewWiring) {
       ];
   }
 }
+
+/**
+ * No drawn caret where keys do not type (spec: caret-rules / 落点看得见, L3):
+ * `drawSelection()` shows its cursor layer whenever the editor is focused,
+ * editable or not, and Reading mode stays focusable (Cmd+F, keyboard scroll).
+ * Derived from `EditorView.editable`, not from the mode's name, so any
+ * non-editable view gets it; `theme.ts` hides the cursor layer under the class.
+ * Selection ranges keep painting (Find's current match in Reading mode).
+ */
+export const NO_CARET_CLASS = "om-no-caret";
+const noCaret = EditorView.editorAttributes.compute([EditorView.editable], (state): Record<string, string> =>
+  state.facet(EditorView.editable) ? {} : { class: NO_CARET_CLASS },
+);
 
 /** Directory of a document path (dirname); null for browser dev / a root file. */
 function docDirOf(path: string | null): string | null {
@@ -287,6 +302,7 @@ export function buildEditorState(options: EditorStateOptions, loadMermaid: Merma
         // caret-rules R2 / R2a / R2b) — one filter for every undo entry point.
         undoLanding,
         strandedCaret,
+        findClosesParts,
         // Typing on the only blank line between two blocks keeps the block below
         // separate (spec: editor-fidelity N8). Every mode: the file's structure
         // is the same whether it is rendered or not.
@@ -302,7 +318,12 @@ export function buildEditorState(options: EditorStateOptions, loadMermaid: Merma
         // Custom find/replace panel (change: find-ui): only the panel UI is
         // replaced — the query engine stays @codemirror/search. searchKeymap
         // below keeps Mod-f/Escape wired to open/closeSearchPanel.
-        search({ top: true, literal: true, createPanel: createFindPanel }),
+        // The current match scrolls through the landing scroll (spec:
+        // caret-rules R14 / 落点看得见 L2): a match in a table cell scrolls that
+        // cell in, not the table's box.
+        search({ top: true, literal: true, createPanel: createFindPanel, scrollToMatch: scrollLanding }),
+        landingScroll,
+        noCaret,
         EditorView.lineWrapping,
         // CommonMark + GFM + the registered parse-level dialects (math,
         // frontmatter) — see dialectParser.ts (spec: markdown-dialect).

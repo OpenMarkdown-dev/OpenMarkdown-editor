@@ -171,3 +171,56 @@ describe("editor style gate", () => {
     expect(probe("editor/x.ts", `el.classList.toggle("om-find-no-match", on);`)).toEqual([]);
   });
 });
+
+/**
+ * Gate (spec: live-preview-editor / 横向滚动的块显示可滚提示; change:
+ * demo-phone-and-list-indent, design D4). A block that scrolls sideways shows a
+ * scroll cue, and the overflow and the cue come from ONE definition:
+ * `HSCROLL_STYLE` in `hscroll.ts` (with `watchHScroll` setting its state).
+ * Fails on any other `overflowX: "auto" | "scroll"` (or `overflow-x: auto |
+ * scroll`) in editor code — `render/` is the export / CSS package's own sheet,
+ * out of scope (it has no JS to drive a cue) — and on a sideways-scrolling
+ * theme rule that does not spread `HSCROLL_STYLE`.
+ *
+ * HONEST LIMITS: lexical. The `overflow` shorthand (`overflow: "auto"`) and a
+ * value assembled at runtime are not seen.
+ */
+const HSCROLL_FILE = "editor/hscroll.ts";
+const SIDEWAYS = /\boverflowX\s*:\s*["'](?:auto|scroll)["']|\boverflow-x\s*:\s*(?:auto|scroll)\b/;
+
+export function hscrollViolations(files: { path: string; lines: string[] }[]): string[] {
+  const out: string[] = [];
+  for (const { path, lines } of files) {
+    if (path === HSCROLL_FILE || path.startsWith("editor/render/")) continue;
+    lines.forEach((raw, i) => {
+      if (isComment(raw)) return;
+      if (SIDEWAYS.test(code(raw))) out.push(`${path}:${i + 1}: sideways scroll outside HSCROLL_STYLE (${HSCROLL_FILE}) — spread it instead`);
+    });
+  }
+  return out;
+}
+
+describe("sideways-scrolling blocks — one definition (gate)", () => {
+  const files = productFiles();
+
+  it("no editor module sets its own sideways overflow", () => {
+    const v = hscrollViolations(files);
+    expect(v, v.join("\n")).toEqual([]);
+  });
+
+  it("the table wrap and block math spread HSCROLL_STYLE", () => {
+    const theme = files.find((f) => f.path === "editor/theme.ts")!.lines.join("\n");
+    for (const sel of [".om-table-wrap", ".om-math-block"]) {
+      const rule = new RegExp(`"${sel.replace(".", "\\.")}":\\s*\\{[^}]*\\.\\.\\.HSCROLL_STYLE`);
+      expect(theme, `${sel} spreads HSCROLL_STYLE`).toMatch(rule);
+    }
+  });
+
+  it("catches an own overflowX; passes render/ and hscroll.ts", () => {
+    expect(hscrollViolations([{ path: "editor/theme.ts", lines: [`  ".x": { overflowX: "auto" },`] }])).toHaveLength(1);
+    expect(hscrollViolations([{ path: "editor/widgets.ts", lines: ["el.style.cssText = 'overflow-x: scroll';"] }])).toHaveLength(1);
+    expect(hscrollViolations([{ path: "editor/render/renderStyle.ts", lines: [`{ overflowX: "auto" }`] }])).toEqual([]);
+    expect(hscrollViolations([{ path: HSCROLL_FILE, lines: [`overflowX: "auto",`] }])).toEqual([]);
+    expect(hscrollViolations([{ path: "editor/theme.ts", lines: [`{ overflowX: "hidden" }`] }])).toEqual([]);
+  });
+});

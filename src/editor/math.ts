@@ -2,6 +2,7 @@ import { logError } from "@/lib/log";
 import { createSignal } from "@/lib/signal";
 import { StateEffect } from "@codemirror/state";
 import { mathMarkup, type SafeMarkup } from "./markup";
+import { type Pending, pending } from "./blocks/render";
 import type {
   MarkdownConfig,
   InlineContext,
@@ -132,6 +133,8 @@ interface TemmlModule {
 
 let temml: TemmlModule | null = null;
 let loading = false;
+/** The load failed (change: render-placeholder-size, design D5): formulas stay their source. */
+let loadFailed = false;
 /** One-shot: every waiter is told once, then the signal is cleared. */
 const ready = createSignal();
 
@@ -140,13 +143,25 @@ export function isMathReady(): boolean {
   return temml !== null;
 }
 
+/** Where the converter is: a value that changes exactly when formulas should redraw. */
+export function mathState(): "loading" | "ready" | "failed" {
+  return temml ? "ready" : loadFailed ? "failed" : "loading";
+}
+
+/** True once the converter's load has failed: no formula will render this session. */
+export function mathLoadFailed(): boolean {
+  return loadFailed;
+}
+
 /**
  * Kick off the one-time lazy load of the converter. `onReady` runs after the
- * module resolves (asynchronously, so it is safe to `view.dispatch` from it).
- * No-ops once loaded or already in flight, but every caller's `onReady` fires.
+ * load settles — loaded or FAILED (design D5: a placeholder waiting on it must
+ * hear the end either way) — asynchronously, so it is safe to `view.dispatch`
+ * from it. No-ops once settled or already in flight, but every caller's
+ * `onReady` fires.
  */
 export function ensureMath(onReady: () => void): void {
-  if (temml) return;
+  if (temml || loadFailed) return;
   ready.subscribe(onReady);
   if (loading) return;
   loading = true;
@@ -158,10 +173,14 @@ export function ensureMath(onReady: () => void): void {
       ready.clear();
     })
     .catch((e: unknown) => {
-      // Leave `temml` null so math nodes stay as source (degrade contract) —
-      // the user still reads the TeX; the developer gets the reason.
+      // Leave `temml` null and record the failure, so formulas show their
+      // source (degrade contract) instead of waiting forever — the user still
+      // reads the TeX; the developer gets the reason. Waiters are told, so the
+      // placeholders turn back into source.
       logError("math converter load", e);
       loading = false;
+      loadFailed = true;
+      ready.emit();
       ready.clear();
     });
 }
@@ -188,4 +207,16 @@ export function ensureMath(onReady: () => void): void {
 export function renderMath(tex: string, displayMode: boolean): SafeMarkup | null {
   if (!temml) return null;
   return mathMarkup(temml.renderToString(tex, { displayMode, throwOnError: true, trust: false }));
+}
+
+/**
+ * The editor's formula renderer (block, inline, table cell): `renderMath`'s
+ * answer with "not loaded yet" told apart (change: render-placeholder-size,
+ * design D1) — `pending()` while the converter is loading (the placeholder),
+ * `null` once its load has failed ("not mine": the source, unmarked), MathML
+ * otherwise; it THROWS on TeX it cannot render.
+ */
+export function renderFormula(tex: string, displayMode: boolean): SafeMarkup | Pending | null {
+  if (temml) return renderMath(tex, displayMode);
+  return loadFailed ? null : pending();
 }

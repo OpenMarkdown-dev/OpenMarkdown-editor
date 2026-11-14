@@ -1,12 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { attemptRender, failedSourceMark, failureReason } from "./render";
+import { attemptRender, attemptRenderAsync, failedSourceMark, failureReason, isPending, pending } from "./render";
 
 describe("attemptRender — the one place a render error is caught (change: block-fallback, D1)", () => {
   it("passes a rendered value through", () => {
     expect(attemptRender(() => "<math/>")).toEqual({ kind: "rendered", value: "<math/>" });
   });
 
-  it("treats null as 'not now': source, no failure", () => {
+  it("passes pending ('mine, not yet') through, apart from null (change: render-placeholder-size, D1)", async () => {
+    expect(attemptRender(() => pending())).toEqual({ kind: "pending" });
+    const content = { key: "k", build: () => ({}) as HTMLElement };
+    expect(attemptRender(() => pending({ content }))).toEqual({ kind: "pending", content });
+    expect(await attemptRenderAsync(async () => pending())).toEqual({ kind: "pending" });
+    expect(await attemptRenderAsync(async () => null)).toEqual({ kind: "source" });
+    expect(isPending(pending())).toBe(true);
+    expect(isPending(null)).toBe(false);
+    expect(isPending({ content: undefined })).toBe(false);
+  });
+
+  it("treats null as 'not mine': source, no failure", () => {
     expect(attemptRender(() => null)).toEqual({ kind: "source" });
   });
 

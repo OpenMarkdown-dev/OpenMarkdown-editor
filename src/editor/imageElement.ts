@@ -3,6 +3,7 @@ import { editorString } from "./strings";
 import type { ImageLabel } from "./imageAlt";
 import { editorIconButton } from "./controls";
 import { zoomed } from "./contentZoom";
+import { clearPending, imageSizeKey, markPending, rememberSize, rememberedSize } from "./blocks/pending";
 
 /**
  * The ONE rendered image element (spec: live-preview-editor / 图片元素只有一处
@@ -31,19 +32,29 @@ import { zoomed } from "./contentZoom";
  *
  * Larger than the picture is honoured (upscaled); the column cap still holds.
  *
- * - no written width, the picture's own width `natural` known (it has loaded) →
- *   `zoomed("<natural>px")`: a picture pixel is a document pixel too, so an
- *   unsized picture scales with the text like a sized one (change: image-resize,
- *   design D1). Before it loads: nothing, the picture's own size.
+ * - no written height, the picture's own size `natural` known (it has loaded,
+ *   now or earlier this session — change: render-placeholder-size, design D6)
+ *   → also `aspect-ratio` from it, so the box holds the picture's height before
+ *   its pixels arrive; and with no written width, `zoomed("<natural>px")` too:
+ *   a picture pixel is a document pixel, so an unsized picture scales with the
+ *   text like a sized one (change: image-resize, design D1). Unknown: nothing,
+ *   the picture's own size (the frame is the placeholder meanwhile).
  */
 export function imageBoxStyle(
   size: Pick<ImageLabel, "width" | "height">,
-  natural?: number,
+  natural?: { width: number; height: number },
 ): { width?: string; aspectRatio?: string } {
-  if (size.width === undefined) return natural ? { width: zoomed(`${natural}px`) } : {};
-  const width = zoomed(`${size.width}px`);
-  return size.height === undefined ? { width } : { width, aspectRatio: `${size.width} / ${size.height}` };
+  if (size.width !== undefined && size.height !== undefined) {
+    return { width: zoomed(`${size.width}px`), aspectRatio: `${size.width} / ${size.height}` };
+  }
+  const known = natural && natural.width > 0 && natural.height > 0 ? natural : undefined;
+  const ratio = known ? { aspectRatio: `${known.width} / ${known.height}` } : {};
+  if (size.width !== undefined) return { width: zoomed(`${size.width}px`), ...ratio };
+  return known ? { width: zoomed(`${known.width}px`), ...ratio } : {};
 }
+
+/** The placeholder's floor for a picture of unknown size (design D6, the minimum). */
+export const IMAGE_PENDING_MIN = { height: "8em", width: "8em" };
 
 /** The resize handle's class: drag-to-resize's one grip (`imageResize.ts`, shown by `theme.ts`). */
 export const IMAGE_HANDLE_CLASS = "om-image-handle";
@@ -62,14 +73,30 @@ export function imageElement(src: string, label: ImageLabel): HTMLElement {
   img.className = "om-image";
   img.src = src;
   img.alt = label.alt;
-  Object.assign(img.style, imageBoxStyle(label));
-  if (label.width === undefined) {
-    // A picture already in the memory cache is known at once; otherwise on load.
-    const sizeToPicture = () => Object.assign(img.style, imageBoxStyle(label, img.naturalWidth));
-    if (img.complete && img.naturalWidth > 0) sizeToPicture();
-    else img.addEventListener("load", sizeToPicture, { once: true });
+  // The one size order (`blocks/pending.ts`, design D6): the written size; else
+  // the picture's natural size remembered from an earlier load this session
+  // (by resolved `src`); else the frame is the placeholder until it arrives.
+  const key = imageSizeKey(src);
+  const stated = label.width !== undefined && label.height !== undefined;
+  const remembered = stated ? undefined : rememberedSize(key);
+  const natural = remembered?.width ? { width: remembered.width, height: remembered.height } : undefined;
+  Object.assign(img.style, imageBoxStyle(label, natural));
+  const arrived = () => {
+    if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+      const size = { width: img.naturalWidth, height: img.naturalHeight };
+      rememberSize(key, size);
+      if (!stated) Object.assign(img.style, imageBoxStyle(label, size));
+    }
+    clearPending(frame);
+  };
+  // A picture already in the memory cache is known at once; otherwise on load.
+  if (img.complete && img.naturalWidth > 0) arrived();
+  else {
+    if (!stated && !natural) markPending(frame, IMAGE_PENDING_MIN.height, label.width === undefined ? IMAGE_PENDING_MIN.width : undefined);
+    img.addEventListener("load", arrived, { once: true });
   }
   img.onerror = () => {
+    clearPending(frame);
     frame.textContent = editorString("widget.imageLoadFailed", { src: label.alt || src });
     frame.className = "om-image-broken";
   };

@@ -124,6 +124,26 @@ export const TYPE_SCALE = {
   ],
 } as const;
 
+/**
+ * The table cell's box — ONE definition the editor theme (`.om-table th, .om-table
+ * td` in `theme.ts`) and the exported document's stylesheet (`th, td` in
+ * `render/renderStyle.ts`) both spread (spec: live-preview-editor / 空单元格保有可点的
+ * 最小尺寸; change: render-placeholder-size, design D7). Besides the padding, a
+ * floor so an empty cell can be seen and clicked: about three characters wide,
+ * and one text line tall. Table cells ignore `min-height` (CSS 2.1 leaves it
+ * undefined for cells; browsers drop it), so the floor is the cell's `height`,
+ * which for a table cell acts as a minimum: one line plus the vertical padding.
+ * A cell with text grows past it as before. Gate: `tableCellBox.test.ts`.
+ */
+export const TABLE_CELL_BOX = {
+  // The floor below counts the padding: border-box here, not only from the
+  // editor's primitives — the exported document has no box-sizing reset.
+  boxSizing: "border-box",
+  padding: "0.3em 0.75em",
+  minWidth: "3ch",
+  height: "calc(1lh + 0.6em)",
+} as const;
+
 /** One heading level's CSS declarations (camelCase keys), from TYPE_SCALE. */
 export function headingType(level: 1 | 2 | 3 | 4 | 5 | 6): Record<string, string> {
   const h = TYPE_SCALE.headings[level - 1];

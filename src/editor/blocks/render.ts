@@ -1,5 +1,5 @@
 import { tipAttrs } from "@/lib/tooltip";
-import { Decoration } from "@codemirror/view";
+import { Decoration, type EditorView } from "@codemirror/view";
 import { type Range, StateEffect } from "@codemirror/state";
 import { editorString } from "../strings";
 
@@ -8,11 +8,17 @@ import { editorString } from "../strings";
  * (spec: block-editing / 渲染失败的块显示源码、渲染失败只在一处接住; change:
  * block-fallback, design D1–D3).
  *
- * A renderer only draws, and has three answers:
+ * A renderer only draws, and has four answers (change: render-placeholder-size,
+ * design D1, adds the second):
  *   - its output            → rendered;
- *   - `null`                → "not now" (converter still loading, not a shape it
- *                             draws): the source stays, unmarked;
+ *   - `pending(…)`          → "mine, not yet" (converter still loading, result
+ *                             still queued, render deliberately deferred): the
+ *                             framework shows the one placeholder
+ *                             (`./pending.ts`), never the source;
+ *   - `null`                → "not mine" (not a shape it draws, or its converter
+ *                             failed to load): the source stays, unmarked;
  *   - it THROWS             → "cannot": the source stays, with the failure mark.
+ * "Not yet" MUST NOT be answered with `null` — gate R4 in `render.gate.test.ts`.
  *
  * `attemptRender` is the only place a render error is caught. The block
  * framework (`field.ts`) runs every registry entry's `widget` through it, so a
@@ -23,14 +29,46 @@ import { editorString } from "../strings";
  * The fallback replaces nothing and hides nothing, so what is on screen is the
  * document's text, editable as usual. An async renderer (mermaid, change:
  * editor-mermaid) goes through the async sibling `attemptRenderAsync` below:
- * the same three answers, settled later, kept in the renderer's cache, and
+ * the same answers, settled later, kept in the renderer's cache, and
  * shown once `asyncRenderDone` makes the block field rebuild.
  */
 
+/**
+ * What a deferred block puts inside its placeholder (design D8) — e.g. a
+ * large diagram's hint and its Render button. `key` identifies it for widget
+ * equality; the box, its size, reveal and replacement stay the framework's.
+ */
+export interface PendingContent {
+  key: string;
+  build(view: EditorView): HTMLElement;
+}
+
+/** The "mine, not yet" answer. Made only by `pending()`, told apart by `isPending`. */
+export class Pending {
+  /** @internal use `pending()` */
+  constructor(readonly content?: PendingContent) {}
+}
+
+/** A renderer's "mine, not yet" answer: show the placeholder, optionally with `content` in it. */
+export function pending(opts: { content?: PendingContent } = {}): Pending {
+  return new Pending(opts.content);
+}
+
+export function isPending(value: unknown): value is Pending {
+  return value instanceof Pending;
+}
+
 export type RenderResult<T> =
   | { kind: "rendered"; value: T }
+  | { kind: "pending"; content?: PendingContent }
   | { kind: "source" }
   | { kind: "failed"; reason: string };
+
+function settle<T>(value: T | Pending | null | undefined): RenderResult<T> {
+  if (value == null) return { kind: "source" };
+  if (isPending(value)) return value.content ? { kind: "pending", content: value.content } : { kind: "pending" };
+  return { kind: "rendered", value };
+}
 
 /** The renderer's own words, first line only (Temml appends a caret line). */
 export function failureReason(e: unknown): string {
@@ -38,10 +76,9 @@ export function failureReason(e: unknown): string {
   return text.trim().split("\n")[0].trim();
 }
 
-export function attemptRender<T>(render: () => T | null): RenderResult<T> {
+export function attemptRender<T>(render: () => T | Pending | null): RenderResult<T> {
   try {
-    const value = render();
-    return value == null ? { kind: "source" } : { kind: "rendered", value };
+    return settle(render());
   } catch (e) {
     return { kind: "failed", reason: failureReason(e) };
   }
@@ -51,11 +88,11 @@ export function attemptRender<T>(render: () => T | null): RenderResult<T> {
  * `attemptRender` for a renderer that answers later: a rejection becomes the
  * same `failed` result a throw does. Never rejects itself.
  */
-export function attemptRenderAsync<T>(render: () => Promise<T | null>): Promise<RenderResult<T>> {
+export function attemptRenderAsync<T>(render: () => Promise<T | Pending | null>): Promise<RenderResult<T>> {
   return Promise.resolve()
     .then(render)
     .then(
-      (value): RenderResult<T> => (value == null ? { kind: "source" } : { kind: "rendered", value }),
+      (value): RenderResult<T> => settle(value),
       (e: unknown): RenderResult<T> => ({ kind: "failed", reason: failureReason(e) }),
     );
 }

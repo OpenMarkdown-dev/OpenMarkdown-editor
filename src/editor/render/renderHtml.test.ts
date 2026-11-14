@@ -41,6 +41,25 @@ describe("renderHTML: GFM basics", () => {
     expect(html).not.toContain("style=");
   });
 
+  it("an empty cell keeps its column (header and body)", () => {
+    const html = r("| | Tree | Source |\n| --- | --- | --- |\n| a | | c |\n|  | b |  |\n");
+    expect(html).toContain("<tr><th></th><th>Tree</th><th>Source</th></tr>");
+    expect(html).toContain("<tr><td>a</td><td></td><td>c</td></tr>");
+    expect(html).toContain("<tr><td></td><td>b</td><td></td></tr>");
+  });
+
+  it("an empty cell keeps its column in a table without outer pipes", () => {
+    expect(r("x | y | z\n--|--|--\na | | c\n")).toContain("<tr><td>a</td><td></td><td>c</td></tr>");
+  });
+
+  it("a diff fence marks added and removed lines, text unchanged", () => {
+    const html = r("```diff\n context <x>\n-old\n+new\n```\n");
+    expect(html).toBe(
+      '<pre class="om-code"><code class="language-diff"> context &lt;x&gt;\n<span class="om-diff-del">-old</span>\n<span class="om-diff-add">+new</span></code></pre>\n',
+    );
+    expect(html.replace(/<[^>]+>/g, "")).toBe(" context &lt;x&gt;\n-old\n+new\n");
+  });
+
   it("fenced code keeps its language and its text exactly", () => {
     expect(r("```ts\nconst a = 1 < 2;\n```\n")).toBe(
       '<pre class="om-code"><code class="language-ts">const a = 1 &lt; 2;</code></pre>\n',
@@ -65,6 +84,12 @@ describe("renderHTML: links", () => {
 
   it("reference links resolve; an undefined reference stays text", () => {
     expect(r("[a][r] [b]\n\n[r]: https://r.x \"T\"\n")).toBe('<p><a href="https://r.x" title="T">a</a> [b]</p>\n');
+  });
+
+  it("an empty destination is a link to this document (CommonMark)", () => {
+    expect(r("[a]()\n")).toBe('<p><a href="">a</a></p>\n');
+    expect(r("[a](<>)\n")).toBe('<p><a href="">a</a></p>\n');
+    expect(safeHref("")).toBe("");
   });
 
   it("autolinks and bare URLs", () => {

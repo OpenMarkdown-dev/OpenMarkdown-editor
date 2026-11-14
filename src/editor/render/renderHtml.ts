@@ -9,6 +9,7 @@ import { MERMAID_INFO } from "../mermaid";
 import { parseProps } from "../frontmatterProps";
 import { isRemoteSrc } from "../imageResolve";
 import { standaloneMarkup, type SafeMarkup } from "../markup";
+import { hasDestination, referenceDefinitions, referenceLabelOf } from "../linkRefs";
 
 /**
  * THE renderer: markdown → semantic HTML (spec: markdown-render; change:
@@ -86,6 +87,7 @@ export function browserUrl(url: string): string | null {
 
 /** A link target the page may carry, or null (the link keeps its text, loses its target). */
 export function safeHref(url: string): string | null {
+  if (url === "") return ""; // an empty destination (`[a]()`) is this document (CommonMark)
   const u = browserUrl(url);
   if (!u) return null;
   if (!isRemoteSrc(u)) return u; // relative path, `#anchor`, `/abs/path`
@@ -102,9 +104,6 @@ export function safeImageSrc(src: string): string | null {
 
 const ENTITY = /^&(#\d{1,7}|#[xX][0-9a-fA-F]{1,6}|[a-zA-Z][a-zA-Z0-9]{1,31});$/;
 
-/** CommonMark link-label normalisation: case-fold, collapse whitespace. */
-const labelKey = (label: string): string => label.trim().replace(/\s+/g, " ").toLowerCase();
-
 /** Strip one `<…>` pair from a link destination. */
 const destination = (raw: string): string => {
   const t = raw.trim();
@@ -114,10 +113,6 @@ const destination = (raw: string): string => {
 /** A link title without its quotes. */
 const titleText = (raw: string): string => raw.trim().slice(1, -1);
 
-interface Ref {
-  url: string;
-  title: string | null;
-}
 
 interface Heading {
   placeholder: string;
@@ -175,30 +170,16 @@ function fenceBodyOf(src: string, node: SyntaxNode): string {
 
 
 class Renderer {
-  private readonly refs = new Map<string, Ref>();
   private readonly headings: Heading[] = [];
+  /** Reference definitions by label — from the one link predicate (`linkRefs.ts`). */
+  private readonly refs: ReadonlyMap<string, SyntaxNode>;
 
   constructor(
     private readonly src: string,
     private readonly tree: Tree,
     private readonly opts: RenderOptions,
   ) {
-    const top = tree.topNode;
-    for (let c = top.firstChild; c; c = c.nextSibling) this.collectRefs(c);
-  }
-
-  private collectRefs(node: SyntaxNode): void {
-    if (node.name === "LinkReference") {
-      const label = node.getChild("LinkLabel");
-      const url = node.getChild("URL");
-      if (label && url) {
-        const key = labelKey(this.text(label).slice(1, -1));
-        const title = node.getChild("LinkTitle");
-        if (!this.refs.has(key)) this.refs.set(key, { url: destination(this.text(url)), title: title ? titleText(this.text(title)) : null });
-      }
-      return;
-    }
-    for (let c = node.firstChild; c; c = c.nextSibling) this.collectRefs(c);
+    this.refs = referenceDefinitions(tree, (a, b) => src.slice(a, b));
   }
 
   private text(node: { from: number; to: number }): string {
@@ -374,7 +355,9 @@ class Renderer {
 
   private codeBlock(body: string, lang: string | null): string {
     const cls = lang ? ` class="language-${esc(lang)}"` : "";
-    return `<pre class="om-code"><code${cls}>${esc(body.replace(/\n$/, ""))}</code></pre>\n`;
+    const text = body.replace(/\n$/, "");
+    const inner = lang?.toLowerCase() === DIFF_INFO ? diffLines(text) : esc(text);
+    return `<pre class="om-code"><code${cls}>${inner}</code></pre>\n`;
   }
 
   /** The one place drawn markup enters the page: as plain HTML (`standaloneMarkup`). */
@@ -416,7 +399,7 @@ class Renderer {
           })
       : [];
     const row = (r: SyntaxNode, tag: "th" | "td"): string => {
-      const cells = r.getChildren("TableCell");
+      const cells = rowCells(r);
       const n = Math.max(cells.length, tag === "th" ? cells.length : aligns.length || cells.length);
       let out = "<tr>";
       for (let i = 0; i < n; i++) {
@@ -543,20 +526,22 @@ class Renderer {
     let url: string | null = null;
     let title: string | null = null;
     const urlNode = node.getChild("URL");
-    if (urlNode) {
-      url = destination(this.text(urlNode));
+    if (urlNode || hasDestination(node, (a, b) => this.src.slice(a, b))) {
+      // `[a]()` has no URL node: an empty destination (CommonMark).
+      url = urlNode ? destination(this.text(urlNode)) : "";
       const t = node.getChild("LinkTitle");
       title = t ? titleText(this.text(t)) : null;
     } else {
-      const ref = node.getChild("LinkLabel");
-      const key = labelKey(ref ? this.text(ref).slice(1, -1) || this.src.slice(labelFrom, labelTo) : this.src.slice(labelFrom, labelTo));
-      const hit = this.refs.get(key);
+      const key = referenceLabelOf(node, (a, b) => this.src.slice(a, b));
+      const hit = key === null ? undefined : this.refs.get(key);
       if (!hit) {
-        // No such reference: not a link (CommonMark) — the brackets stay as text.
+        // No such reference: not a link (CommonMark; the one predicate,
+        // `linkRefs.ts` isLink) — the brackets stay as text.
         return esc(this.src.slice(node.from, labelFrom)) + this.inline(node, labelFrom, labelTo) + this.textRun(this.src.slice(labelTo, node.to));
       }
-      url = hit.url;
-      title = hit.title;
+      url = destination(this.text(hit.getChild("URL")!));
+      const t = hit.getChild("LinkTitle");
+      title = t ? titleText(this.text(t)) : null;
     }
     const titleAttr = title ? ` title="${esc(title)}"` : "";
     if (image) {
@@ -571,8 +556,50 @@ class Renderer {
     }
     const inner = this.inline(node, labelFrom, labelTo);
     const href = safeHref(url);
-    return href ? `<a href="${esc(href)}"${titleAttr}>${inner}</a>` : inner;
+    return href !== null ? `<a href="${esc(href)}"${titleAttr}>${inner}</a>` : inner;
   }
+}
+
+/** The fence info string whose lines are marked as added / removed. */
+const DIFF_INFO = "diff";
+
+/**
+ * A diff fence's text, escaped, each `+` / `-` line wrapped in a marker span
+ * (`om-diff-add` / `om-diff-del`). Structure only: the text is unchanged and
+ * colour is the stylesheet's business.
+ */
+function diffLines(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => {
+      const kind = line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : null;
+      return kind ? `<span class="om-diff-${kind}">${esc(line)}</span>` : esc(line);
+    })
+    .join("\n");
+}
+
+/**
+ * A table row's cells by column: the parser gives an EMPTY cell no
+ * `TableCell` node, so cells are placed by the row's `|` delimiters — a slot
+ * closes at each delimiter, and a slot with no cell is null (an empty cell),
+ * never skipped (which would shift the rest of the row left).
+ */
+function rowCells(row: SyntaxNode): (SyntaxNode | null)[] {
+  const slots: (SyntaxNode | null)[] = [];
+  let pending: SyntaxNode | null = null;
+  let open = false;
+  for (let ch = row.firstChild; ch; ch = ch.nextSibling) {
+    if (ch.name === "TableDelimiter") {
+      if (open) slots.push(pending);
+      pending = null;
+      open = true;
+    } else if (ch.name === "TableCell") {
+      pending = ch;
+      open = true;
+    }
+  }
+  if (pending) slots.push(pending);
+  return slots;
 }
 
 /** Markdown → an HTML fragment (no `<html>` / `<head>`; see `./document.ts` for a whole page). */

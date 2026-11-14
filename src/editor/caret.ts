@@ -3,11 +3,13 @@ import {
   type EditorState,
   type Extension,
   Facet,
-  type StateEffect,
+  StateEffect,
   type Transaction,
+  type TransactionSpec,
   findClusterBreak,
 } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
+import { searchPanelOpen } from "@codemirror/search";
 import type { SyntaxNode } from "@lezer/common";
 import { REVEAL_ON_TOUCH_NODES } from "./previewConceal";
 import { livePreviewConfig } from "./previewConfig";
@@ -67,8 +69,10 @@ export interface BlockCaretHooks {
   revealRange(state: EditorState, node: SyntaxNode): { from: number; to: number } | null;
   /** The rendered B blocks of `state`. */
   editable(state: EditorState): CaretBlock[];
-  /** Enter the part of B block `block` that holds `pos` (the block's `enterAt`). */
-  enterAt(view: EditorView, block: CaretBlock, pos: number): void;
+  /** Enter the part of B block `block` that holds `pos` (the block's `enterAt`); with `head`, that range selected in it. */
+  enterAt(view: EditorView, block: CaretBlock, pos: number, head?: number): void;
+  /** The source range of the part of `block` holding `pos` (a cell, a property value), or null. */
+  partAt(state: EditorState, block: CaretBlock, pos: number): { from: number; to: number } | null;
   /** The effects that end every open B-block part edit; [] when none is open. */
   leave(state: EditorState): StateEffect<unknown>[];
 }
@@ -214,11 +218,17 @@ export const undoLanding: Extension = ViewPlugin.define((view) => ({
  * (before the widget); so is any caret while a part edit is open (the part owns
  * the keys), and anything in source mode (no provider, nothing rendered).
  */
-export function strandedIn(state: EditorState): { block: CaretBlock; pos: number } | null {
+export function strandedIn(
+  state: EditorState,
+  bodyHasFocus?: boolean,
+): { block: CaretBlock; pos: number; head?: number } | null {
   const hooks = state.facet(blockCaret);
   if (!hooks) return null;
   const sel = state.selection.main;
-  if (!sel.empty) return null;
+  if (!sel.empty) return strandedRange(state, hooks, bodyHasFocus);
+  // The Find input has the keys: nothing opens until the body takes them back
+  // (design D4) — the caret a part left behind when Find opened stays put.
+  if (bodyHasFocus === false && searchPanelOpen(state)) return null;
   const pos = sel.head;
   const block = hooks.editable(state).find((b) => b.from < pos && pos <= b.to);
   if (!block || hooks.leave(state).length > 0) return null;
@@ -226,23 +236,225 @@ export function strandedIn(state: EditorState): { block: CaretBlock; pos: number
 }
 
 /**
+ * Opening Find ends an open part edit (design D4, extended): a part editor
+ * paints no Find matches, and an open part keeps its block's DOM as it is (so
+ * typing survives), so neither the open cell nor the others would show them.
+ * With the part closed the block paints every match (D3). The caret stays
+ * where it was (in the part's source, not after the block as an ordinary exit
+ * puts it), so once Find closes and the body has the keys again, R2c enters
+ * the part at the landing. The transaction that closes it, or null when Find
+ * did not just open or nothing is open. Pure: `before` / `after` are one
+ * transaction's states.
+ */
+export function findTookKeys(before: EditorState, after: EditorState): TransactionSpec | null {
+  if (searchPanelOpen(before) || !searchPanelOpen(after)) return null;
+  const effects = leaveBlockEdits(after);
+  return effects.length ? { effects, selection: after.selection } : null;
+}
+
+/** `findTookKeys`, installed once in the main editor (after the update, like R2b / R2c). */
+export const findClosesParts: Extension = ViewPlugin.define((view) => ({
+  update(u: ViewUpdate) {
+    const close = findTookKeys(u.startState, u.state);
+    if (!close) return;
+    queueMicrotask(() => {
+      if (!view.dom.isConnected || view.state !== u.state) return;
+      view.dispatch(close);
+    });
+  },
+}));
+
+/**
+ * R2c for a selection (spec: caret-rules / 光标不停在渲染块内部, 2nd paragraph):
+ * a range lying wholly in one part of a B block with no part open — a Find
+ * match in a table cell — is entered with the same text selected, but only
+ * once the BODY has the keys (`bodyHasFocus`, e.g. Esc closed the Find panel):
+ * entering while the Find input has focus would take Enter away from it. No
+ * focus information (`undefined`) is no entry. A range across two parts is
+ * left where it is (design Open Question 2). Not in a read-only view: no keys
+ * type there.
+ */
+function strandedRange(
+  state: EditorState,
+  hooks: BlockCaretHooks,
+  bodyHasFocus: boolean | undefined,
+): { block: CaretBlock; pos: number; head: number } | null {
+  if (bodyHasFocus !== true || state.readOnly) return null;
+  const { from, to, anchor, head } = state.selection.main;
+  const block = hooks.editable(state).find((b) => b.from <= from && to <= b.to);
+  if (!block || hooks.leave(state).length > 0) return null;
+  const part = hooks.partAt(state, block, from);
+  if (!part || to > part.to) return null;
+  return { block, pos: anchor, head };
+}
+
+/**
  * R2c, installed once in the main editor: after any update but an undo / redo
- * (R2b lands those), a stranded caret enters its part. After the update, in a
+ * (R2b lands those), a stranded caret — or, once the body has the keys, a
+ * selection inside one part — enters its part. After the update, in a
  * microtask, like the undo landing (an update may not dispatch).
  */
 export const strandedCaret: Extension = ViewPlugin.define((view) => ({
   update(u: ViewUpdate) {
-    if (!u.docChanged && !u.selectionSet) return;
+    // A focus change too: the body taking the keys back (Find closed) is when
+    // a selection inside one cell is entered.
+    if (!u.docChanged && !u.selectionSet && !u.focusChanged) return;
     if (u.transactions.some((tr) => tr.isUserEvent("undo") || tr.isUserEvent("redo"))) return;
-    if (!strandedIn(u.state)) return;
+    if (!strandedIn(u.state, view.hasFocus)) return;
     queueMicrotask(() => {
       if (!view.dom.isConnected || view.state !== u.state || view.composing) return;
-      const hit = strandedIn(view.state);
+      const hit = strandedIn(view.state, view.hasFocus);
       const hooks = view.state.facet(blockCaret);
-      if (hit && hooks) hooks.enterAt(view, hit.block, hit.pos);
+      if (hit && hooks) hooks.enterAt(view, hit.block, hit.pos, hit.head);
     });
   },
 }));
+
+// --- 落点看得见: a landing is visible (L1 / L2) ----------------------------------
+
+/**
+ * Does the landing (the main selection: a caret or a range) lie inside the
+ * hidden range [from, to]? True when an endpoint of the main selection is
+ * STRICTLY inside it (an empty selection: its caret). Touching an edge, or
+ * spanning the whole range, is not inside: a drag across a whole long link
+ * keeps its URL chip (spec: live-preview-editor / 长链接触碰不炸开); only a
+ * selection that starts or ends inside the hidden text (a Find match, an undo)
+ * must be shown. The ONE definition (spec: caret-rules / 落点看得见); every path
+ * that hides source asks it (gate: `landing.gate.test.ts` G1).
+ *
+ * `{ strict: false }` also counts a non-empty landing lying wholly within
+ * [from, to], edges included — a Find match EQUAL to the hidden range (a
+ * bullet, `**`, `# `, a link's whole URL): nothing of it is on screen either.
+ * Strict is what decides a REVEAL (so the URL chip survives a selection that
+ * merely touches it); non-strict is what decides whether the hidden range
+ * holds the landing at all — the stand-in mark and the verdict.
+ */
+export function landingInside(state: EditorState, from: number, to: number, { strict = true } = {}): boolean {
+  const { anchor, head, empty } = state.selection.main;
+  if ((from < anchor && anchor < to) || (from < head && head < to)) return true;
+  return !strict && !empty && from <= Math.min(anchor, head) && Math.max(anchor, head) <= to;
+}
+
+/**
+ * How the landing is shown (spec: caret-rules / 落点看得见, L1):
+ * - `plain`: nothing hides it;
+ * - `revealed`: a hiding path skipped its hide over it (live mode reveals);
+ * - `painted`: a rendered block draws it inside itself (the cell holding it);
+ * - `marked`: the visible stand-in of the hidden range (link text, the whole
+ *   widget) is marked as the landing;
+ * - `hidden`: something hides it and nothing shows it — the bug the rule forbids.
+ */
+export type LandingShown = "plain" | "revealed" | "painted" | "marked" | "hidden";
+
+/**
+ * Each hiding path's own answer for the current landing — read off what that
+ * path ACTUALLY builds for the state (its decorations), not off a copy of its
+ * decision — or null when it hides nothing the landing is in. Provided by the
+ * inline preview (`livePreview.ts`) and the block field (`blocks/field.ts`);
+ * a facet for the same reason as `blockCaret` (this module sits below them).
+ */
+export const landingHiders = Facet.define<(state: EditorState) => LandingShown | null>();
+
+/** Worst first: one path hiding the landing outweighs every other showing it. */
+const SHOWN_ORDER: LandingShown[] = ["hidden", "painted", "marked", "revealed"];
+
+/**
+ * The pure verdict for `state`'s landing: how the renderers installed in it
+ * show it. Never `hidden` once every hiding path asks `landingInside` (gate G2).
+ */
+export function landingShownBy(state: EditorState): LandingShown {
+  const answers = state.facet(landingHiders).map((f) => f(state));
+  return SHOWN_ORDER.find((v) => answers.includes(v)) ?? "plain";
+}
+
+/** A landing scroll for a range inside a rendered block: scroll the drawn landing (D5). */
+export const landingScrollEffect = StateEffect.define<{ from: number; to: number }>();
+
+/** What a landing scroll looks for inside a block: the current match, the painted selection, the marked widget. */
+export const PAINTED_LANDING = ".cm-searchMatch-selected, .om-landing, [data-om-landing]";
+
+/**
+ * The landing scroll (spec: caret-rules / 落点看得见, L2; R14): what Find's
+ * `scrollToMatch` returns (`base.ts`). Outside a rendered B block it is
+ * CodeMirror's own `scrollIntoView(range)`. Inside one it is
+ * `landingScrollEffect`: the block's box is not the target (a table taller than
+ * the viewport would scroll to its header, the cell still off screen), the cell
+ * that paints the landing is — `landingScroll` below scrolls it in once the
+ * table has drawn it.
+ */
+export function scrollLanding(range: { from: number; to: number }, view: EditorView): StateEffect<unknown> {
+  const hooks = view.state.facet(blockCaret);
+  const inBlock = hooks?.editable(view.state).some((b) => b.from < range.to && range.from < b.to);
+  return inBlock ? landingScrollEffect.of({ from: range.from, to: range.to }) : EditorView.scrollIntoView(EditorSelection.range(range.from, range.to));
+}
+
+/** The smallest scroll that brings [top, bottom] inside [viewTop, viewBottom] (`nearest`); 0 when it already is. Pure. */
+export function nearestDelta(top: number, bottom: number, viewTop: number, viewBottom: number): number {
+  if (top >= viewTop && bottom <= viewBottom) return 0;
+  if (bottom - top > viewBottom - viewTop || top < viewTop) return top - viewTop;
+  return bottom - viewBottom;
+}
+
+/**
+ * Scroll `el` — a drawn landing: a cell, a painted match — into `view`'s
+ * scroller, `nearest` (no movement when it is in view). One measure: read its
+ * box, write the offset. The cell entry uses it for the cell's whole box: a
+ * nested editor's own scroll brings only its caret line in, short of the
+ * cell's padding (spec: caret-rules R8, 落点看得见 L2).
+ */
+export function scrollBoxIntoView(view: EditorView, el: HTMLElement): void {
+  view.requestMeasure({
+    read: () => {
+      if (!el.isConnected) return 0;
+      const r = el.getBoundingClientRect();
+      const sc = view.scrollDOM.getBoundingClientRect();
+      return nearestDelta(r.top, r.bottom, sc.top, sc.bottom);
+    },
+    write: (delta) => {
+      if (delta) view.scrollDOM.scrollTop += delta;
+    },
+  });
+}
+
+/**
+ * Scrolls the painted landing of a `landingScrollEffect` into view, `nearest`.
+ * One measure: read the painted element's box, write the scroller's offset. A
+ * block that is not drawn yet (far outside the viewport) is scrolled to first
+ * by its height-map position; after any scroll the measure looks once more.
+ */
+export const landingScroll: Extension = ViewPlugin.define((view) => {
+  const scrollTo = (range: { from: number; to: number }, retry: boolean) =>
+    view.requestMeasure({
+      read: () => {
+        const block = view.state.facet(blockCaret)?.editable(view.state).find((b) => b.from < range.to && range.from < b.to);
+        if (!block) return null;
+        const scroller = view.scrollDOM.getBoundingClientRect();
+        const el = [...view.contentDOM.querySelectorAll<HTMLElement>(PAINTED_LANDING)].find((e) => {
+          const pos = view.posAtDOM(e);
+          return block.from <= pos && pos <= block.to;
+        });
+        if (el) {
+          const r = el.getBoundingClientRect();
+          return { delta: nearestDelta(r.top, r.bottom, scroller.top, scroller.bottom), drawn: true };
+        }
+        // Not drawn: bring the block's top in by the height map, then look again.
+        const top = view.lineBlockAt(block.from).top + view.documentTop;
+        return { delta: nearestDelta(top, top + 1, scroller.top, scroller.bottom), drawn: false };
+      },
+      write: (m) => {
+        if (!m) return;
+        if (m.delta) view.scrollDOM.scrollTop += m.delta;
+        // Look once more after a scroll: the block may only now be drawn, and
+        // the heights CodeMirror re-measures around it can shift it again.
+        if (m.delta && !retry) scrollTo(range, true);
+      },
+    });
+  return {
+    update(u: ViewUpdate) {
+      for (const tr of u.transactions) for (const e of tr.effects) if (e.is(landingScrollEffect)) scrollTo(e.value, false);
+    },
+  };
+});
 
 // --- R3: user navigation ---------------------------------------------------------
 

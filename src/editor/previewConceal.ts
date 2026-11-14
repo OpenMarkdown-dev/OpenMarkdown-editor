@@ -18,18 +18,36 @@
  * that is merely similar does.
  */
 
-/** Marks whose parent element decides reveal state; all hidden in reading mode. */
+/**
+ * Marks whose parent element decides reveal state; all hidden in reading mode.
+ * NOT `LinkMark`: whether a bracket is hidden depends on whether the pair is a
+ * link at all, which only `linkRefs.ts` answers (`linkMarkConcealable`; change:
+ * write-back-valid) — both consumers ask it before hiding one.
+ */
 export const FORMATTING_MARKS = new Set([
   "EmphasisMark",
   "CodeMark",
   "StrikethroughMark",
   "HeaderMark",
-  "LinkMark",
   "QuoteMark",
 ]);
 
 /** Visible stand-in for an unordered list marker (`BulletWidget`). */
 export const BULLET_GLYPH = "•";
+
+/**
+ * What a list item's `ListMark` shows once rendered — the one answer for the
+ * renderer and plain copy:
+ *   - `null`: shown as written (an ordered list's `1.` is only coloured);
+ *   - `""`: nothing — a bullet task item's checkbox IS its marker, as in GFM
+ *     renderers and our own HTML export (change: demo-phone-and-list-indent,
+ *     design D1), so no `• ☐`;
+ *   - `BULLET_GLYPH`: a plain bullet item.
+ */
+export function listMarkStandIn(item: { name: string; parent: { name: string } | null; getChild(name: string): unknown }): string | null {
+  if (item.parent?.name === "OrderedList") return null;
+  return item.getChild("Task") ? "" : BULLET_GLYPH;
+}
 
 /**
  * Visible stand-ins for a task marker. The rendered form is a checkbox control,

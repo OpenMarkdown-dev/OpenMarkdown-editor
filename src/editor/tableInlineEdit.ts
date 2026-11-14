@@ -1,5 +1,6 @@
 import {
   Annotation,
+  EditorSelection,
   EditorState,
   MapMode,
   StateEffect,
@@ -8,7 +9,7 @@ import {
 } from "@codemirror/state";
 import { isolateHistory } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
-import { cellSourceRange, parseTable, reflowChangeIfNeeded } from "./tableEdit";
+import { cellSourceRange, parseTable, posAfterReflow, reflowChangeIfNeeded } from "./tableEdit";
 import { tableRangeAt } from "./tableCommands";
 import { lineAfterBlock } from "./blocks/geometry";
 
@@ -48,7 +49,7 @@ export interface ActiveEditTarget {
    * number is an offset into the cell (an undo landing, caret-rules R2b). Read
    * once when the cell editor is built; not part of the widget's identity.
    */
-  caret?: "start" | "end" | number;
+  caret?: "start" | "end" | number | { anchor: number; head: number };
 }
 
 export interface ActiveEdit extends ActiveEditTarget {
@@ -140,6 +141,20 @@ export const tableReflowOnEditEnd: Extension = EditorState.transactionFilter.of(
   // `"input"` deliberately, not `CELL_SYNC_USER_EVENT`: history does not join a
   // bare `"input"`, and the reflow should stay its own undo step rather than merge
   // with the typing that preceded it (change: table-cell-edit-undo).
+  // A transaction that names its own landing inside the table (Find closing
+  // the cell keeps the caret there, caret.ts `findTookKeys`) keeps it in the
+  // same cell: the reflow replaces the whole table, which would map it to the
+  // table's start. Only when this transaction changes nothing itself, so its
+  // selection speaks the document the reflow is computed on.
+  if (tr.selection && !tr.docChanged) {
+    const text = tr.startState.sliceDoc(range.from, range.to);
+    const map = (p: number) => posAfterReflow(text, range.from, reflow, p);
+    const selection = EditorSelection.create(
+      tr.selection.ranges.map((r) => EditorSelection.range(map(r.anchor), map(r.head))),
+      tr.selection.mainIndex,
+    );
+    return [tr, { changes: reflow, selection, userEvent: "input", sequential: true }];
+  }
   return [tr, { changes: reflow, userEvent: "input" }];
 });
 

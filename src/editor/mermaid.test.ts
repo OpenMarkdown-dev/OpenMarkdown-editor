@@ -18,6 +18,8 @@ import {
   type MermaidModule,
   rememberMermaid,
   renderWith,
+  measureMermaidStep,
+  MERMAID_MEASURES,
   requestMermaid,
   shownMermaid,
 } from "./mermaid";
@@ -26,6 +28,9 @@ import { createEditorState } from ".";
 import { createEditorState as createDiagramFreeState } from "./base";
 import { importMermaid } from "./mermaidImport";
 import { livePreviewConfig } from "./previewConfig";
+import { PendingWidget } from "./blocks/pending";
+import { SelectableWidget } from "./selectionPaint";
+import { MermaidWidget } from "./widgets";
 import { progressiveTree, withCompleteTree } from "./syntax";
 
 function state(doc: string, opts: { reveal?: boolean; dark?: boolean; anchor?: number } = {}, extra: Extension = []) {
@@ -120,8 +125,26 @@ describe("the block field draws what the cache says (spec: block-editing)", () =
   const body = "flowchart LR\n  field --> test";
   const doc = `para\n\n\`\`\`mermaid\n${body}\n\`\`\`\n\nend\n`;
 
-  it("nothing yet → source, unmarked (not now)", () => {
+  it("no loader and nothing cached (a test state) → no render can come: source, unmarked", () => {
     expect(rendered(state(doc.replace("field", "pending")))).toEqual({ blocks: [], failed: [] });
+  });
+
+  it("nothing yet, a loader there → the one placeholder over the fence (change: render-placeholder-size)", () => {
+    const s = state(doc.replace("field", "waiting"), {}, mermaidLoader.of(() => new Promise<never>(() => {})));
+    expect(rendered(s).blocks).toEqual(["mermaid:A"]);
+    let inner: unknown;
+    s.field(blockDecorationField).blocks.between(0, s.doc.length, (_f, _t, d) => {
+      inner = (d.spec.widget as SelectableWidget).inner;
+    });
+    expect(inner).toBeInstanceOf(PendingWidget);
+    expect((inner as PendingWidget).reserved).toEqual({ origin: "minimum", minHeight: "6em" });
+    // Seeded: the diagram itself.
+    rememberMermaid(body, "light", { kind: "rendered", value: svg("seeded") });
+    const seeded = state(doc, {}, mermaidLoader.of(() => new Promise<never>(() => {})));
+    seeded.field(blockDecorationField).blocks.between(0, seeded.doc.length, (_f, _t, d) => {
+      inner = (d.spec.widget as SelectableWidget).inner;
+    });
+    expect(inner).toBeInstanceOf(MermaidWidget);
   });
 
   it("rendered → one A block named mermaid; the caret inside reveals it", () => {
@@ -175,6 +198,16 @@ describe("the block field draws what the cache says (spec: block-editing)", () =
 });
 
 describe("renderWith — mermaid's global config is borrowed, never kept", () => {
+  it("times its steps as performance measures (change: mermaid-large-diagrams, D1)", async () => {
+    performance.clearMeasures();
+    await renderWith(fake().mod, "graph TD", "light");
+    const names = performance.getEntriesByType("measure").map((m) => m.name);
+    expect(names).toEqual(["om-mermaid:render", "om-mermaid:sanitize"]);
+    // The insert step is `MermaidWidget.toDOM`'s (DOM, not in node): same helper.
+    measureMermaidStep("insert", performance.now());
+    expect(performance.getEntriesByType("measure").map((m) => m.name)).toEqual([...MERMAID_MEASURES]);
+  });
+
   function fake(fail?: string) {
     let site: Record<string, unknown> = { theme: "forest", securityLevel: "loose" };
     const seen: Record<string, unknown>[] = [];
@@ -403,3 +436,16 @@ describe("the driver: typing in a revealed diagram renders nothing (spec: block-
     expect(renders).toEqual([]);
   });
 });
+
+describe("MermaidWidget's height estimate follows the width it is shown at (change: mermaid-large-diagrams, D5)", () => {
+  const w = (vb: string) => new MermaidWidget(mermaidMarkup(`<svg id="om-mermaid-0" viewBox="${vb}"><text>x</text></svg>`), 0);
+  it("narrow: its own height; wide: scaled to the column; very wide: at the floor; tall: fitted", () => {
+    expect(w("0 0 400 300").estimatedHeight).toBe(300);
+    expect(w("0 0 800 400").estimatedHeight).toBe(328);
+    expect(w("0 0 20000 400").estimatedHeight).toBe(300);
+    // Tall (fixture (a)): fitted to the column, not enlarged by the floor.
+    expect(w("0 0 6648 19664").estimatedHeight).toBe(Math.ceil((19664 * 656) / 6648));
+    expect(new MermaidWidget(mermaidMarkup('<svg id="om-mermaid-0"><text>x</text></svg>'), 0).estimatedHeight).toBe(-1);
+  });
+});
+

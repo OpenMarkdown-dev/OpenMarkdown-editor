@@ -13,7 +13,7 @@ import { frontmatterRange } from "./headingIndex";
  * Frontmatter as ordered key/value entries — the Properties block's own rows
  * (`parseProps`, the one property reading; change: missing-gates). Names are
  * whatever YAML allows (Chinese included); a value is what the row's value
- * column shows (between its quotes, no trailing comment); a read-only row
+ * column shows (decoded from its quotes, no trailing comment); a read-only row
  * gives what `parseProps` gives it. Unparseable frontmatter — shown as source,
  * not as a Properties block — has no entries.
  */

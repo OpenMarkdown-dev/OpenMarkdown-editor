@@ -19,13 +19,22 @@ import { listFiles, repoPath } from "../../scripts/lib/repoFiles.mjs";
  * - P3: a YAML library, in source or in package.json. The Properties block
  *   needs byte positions so an edit changes only its bytes; a YAML library
  *   hands back values and re-serialises.
+ * - P4 (spec: frontmatter 的属性只有一个写法; change: write-back-valid, design
+ *   D7): a `name: value` line BUILT outside the one writing — a template
+ *   literal interpolating a value right before `: ` / `:\n` (`` `${k}: ` ``,
+ *   `` `${k}: ${v}` ``), or a concatenation onto `": "` — anywhere in
+ *   `src/editor/` but `frontmatterProps.ts` (`writeScalar` / `newPropertyLine`).
+ *   A name or value written bare is how `key- x #[: {oops: [1, "` reached a
+ *   file. Constant strings (`"---\nname: "`) interpolate nothing and pass.
  *
  * Limits (stated, not hidden): textual. Comments are stripped first; tests and
  * the browser harness (a test driver seeding documents) are not scanned. A
  * reader that slices the frontmatter text and splits on ":" by hand, or a
- * pattern built with `new RegExp("…")`, is not seen. The WRITE side ("only the
- * edited bytes change") has no lexical signature and is held by the byte-level
- * behaviour tests in `frontmatterProps.test.ts`.
+ * pattern built with `new RegExp("…")`, is not seen. P4 sees the line shape
+ * only: a line assembled through a helper elsewhere (`[k, v].join(": ")`) is
+ * not seen. What the writer writes is held by the round-trip table in
+ * `frontmatterProps.test.ts`; that only the edited bytes change, by the
+ * byte-level tests in `blocks/properties.test.ts` and `fidelity.gate.test.ts`.
  */
 
 const SRC = join(__dirname, "..");
@@ -40,6 +49,8 @@ interface Rule {
   what: string;
   re: RegExp;
   owners: Record<string, string>;
+  /** Only paths under this prefix are scanned (default: all of `src/`). */
+  scope?: string;
 }
 
 const RULES: Rule[] = [
@@ -65,6 +76,18 @@ const RULES: Rule[] = [
     ),
     owners: {},
   },
+  {
+    what: "a `name: value` line built outside the one property writing (writeScalar)",
+    // `${…}: ` / `${…}:\n` / `${…}: ${…}` in a template, or `+ ": "` / `+ ":\n"`.
+    re: /\$\{[^}]*\}:(?: (?:\\n|`|\$\{)|\\n)|\+\s*["'`]:(?: |\\n)/,
+    scope: "editor/",
+    owners: {
+      "editor/frontmatterProps.ts": "the one property writing (writeScalar / newPropertyLine)",
+      "editor/skill.ts": "the Properties block as ONE display line for plain copy (`k: v · k: v`), never written to a file",
+      "editor/render/renderStyle.ts": "CSS declarations (`prop: value;`), not frontmatter",
+      "editor/markup.ts": "an error message naming a selector, not frontmatter",
+    },
+  },
 ];
 
 function stripComments(code: string): string {
@@ -83,6 +106,7 @@ export function violations(files: { path: string; code: string }[]): string[] {
       .split("\n")
       .forEach((line, i) => {
         for (const rule of RULES) {
+          if (rule.scope && !path.startsWith(rule.scope)) continue;
           if (!rule.owners[path] && rule.re.test(line)) found.push(`${path}:${i + 1}: ${rule.what}`);
         }
       });
@@ -116,6 +140,10 @@ describe("properties gate", () => {
       'import YAML from "yaml";',
       'const { data } = (await import("gray-matter")).default(doc);',
       "const y = require('js-yaml');",
+      "changes: { from: p.closeFrom, insert: `${name}: \\n` },",
+      "insert: `---\\n${name}: \\n---\\n\\n`",
+      "const line = `${key}: ${value}`;",
+      'const line = key + ": " + value;',
     ];
     for (const code of cases) expect(violations([{ path: "editor/plainCopy.ts", code }]), code).toHaveLength(1);
     expect(yamlDependencies('{"dependencies":{"js-yaml":"^4"}}')).toEqual(["js-yaml"]);
@@ -134,5 +162,10 @@ describe("properties gate", () => {
     expect(probe("dev/harness/cases.ts", `const n = fm.${CLOSE};`)).toEqual([]);
     expect(probe("editor/x.ts", 'import { parse } from "yamlish-thing";')).toEqual([]);
     expect(yamlDependencies('{"dependencies":{"react":"^18"}}')).toEqual([]);
+    // P4: the writer itself, a constant, a non-editor path, an `a:b` id.
+    expect(probe("editor/frontmatterProps.ts", "return `${writeScalar(name, \"key\", null)}: \\n`;")).toEqual([]);
+    expect(probe("editor/skill.ts", 'const head = "---\\nname: ";')).toEqual([]);
+    expect(probe("editorSite/comparison.ts", "out.push(`${who}: ${why}`);")).toEqual([]);
+    expect(probe("editor/structure/index.ts", "found.set(`${n.from}:${n.to}`, n);")).toEqual([]);
   });
 });

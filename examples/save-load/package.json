@@ -8,7 +8,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@openmarkdown-dev/editor": "0.1.2"
+    "@openmarkdown-dev/editor": "0.1.3"
   },
   "devDependencies": {
     "typescript": "~5.8.3",

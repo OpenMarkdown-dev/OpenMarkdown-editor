@@ -18,8 +18,10 @@ export type CalloutType = (typeof CALLOUT_TYPES)[number];
 // callout-suffix). `[!note] -`, `[!note]--` and `[!note]- title` are not
 // callouts. Case-insensitive on the type keyword; surrounding whitespace
 // tolerated. The one reading of the marker: everything else goes through
-// `parseCallout` (via `insets/stack.ts` calloutOf).
-const CALLOUT_RE = /^\s*\[!(note|tip|important|warning|caution)\]([-+])?\s*$/i;
+// `parseCallout` (via `insets/stack.ts` calloutOf). Built from `CALLOUT_TYPES`,
+// the one registry of types (spec: callout 类型只有一个登记处; change:
+// write-back-valid) — the gate in `callout.test.ts` fails on a second list.
+const CALLOUT_RE = new RegExp(`^\\s*\\[!(${CALLOUT_TYPES.join("|")})\\]([-+])?\\s*$`, "i");
 
 /** The fold suffix as written (`-` / `+`), or null. Part of the marker only: nothing folds on it. */
 export type CalloutSuffix = "-" | "+" | null;

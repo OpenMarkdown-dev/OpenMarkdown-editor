@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseInlineSegments, type InlineSegment } from "./inlineCell";
+import { displayOffsetOf, parseInlineSegments, splitRun, type CellMark, type InlineSegment } from "./inlineCell";
 
 /**
  * A table cell's inline segments, read off the editor grammar's tree (changes:
@@ -8,7 +8,10 @@ import { parseInlineSegments, type InlineSegment } from "./inlineCell";
  * is verified by the browser harness (`table-cell-images`) and manual test instead. Cases derive from the spec Scenarios.
  */
 
-const text = (t: string): InlineSegment => ({ kind: "text", text: t });
+// Runs also carry their source range (change: caret-landing-visible); those are
+// pinned in their own describe below, so the shape tests read the text only.
+const text = (t: string): InlineSegment => expect.objectContaining({ kind: "text", text: t });
+const code = (t: string): InlineSegment => expect.objectContaining({ kind: "code", text: t });
 
 describe("parseInlineSegments", () => {
   it("plain text is a single text segment", () => {
@@ -26,8 +29,8 @@ describe("parseInlineSegments", () => {
   });
 
   it("renders inline code literally (no nesting inside)", () => {
-    expect(parseInlineSegments("`code`")).toEqual([{ kind: "code", text: "code" }]);
-    expect(parseInlineSegments("`**not bold**`")).toEqual([{ kind: "code", text: "**not bold**" }]);
+    expect(parseInlineSegments("`code`")).toEqual([code("code")]);
+    expect(parseInlineSegments("`**not bold**`")).toEqual([code("**not bold**")]);
   });
 
   it("renders links with recursive label", () => {
@@ -48,13 +51,13 @@ describe("parseInlineSegments", () => {
       text("a "),
       { kind: "strong", children: [text("b")] },
       text(" c "),
-      { kind: "code", text: "d" },
+      code("d"),
     ]);
   });
 
   it("nests inline code inside bold", () => {
     expect(parseInlineSegments("**a `c` b**")).toEqual([
-      { kind: "strong", children: [text("a "), { kind: "code", text: "c" }, text(" b")] },
+      { kind: "strong", children: [text("a "), code("c"), text(" b")] },
     ]);
   });
 
@@ -91,13 +94,14 @@ describe("parseInlineSegments", () => {
   // too (change: editor-cell-fixes). A code span keeps backslashes literally, so
   // reading the cell as written showed `a\|b`.
   it("an escaped pipe shows as a pipe, inside inline code too", () => {
-    expect(parseInlineSegments("`a\\|b`")).toEqual([{ kind: "code", text: "a|b" }]);
+    expect(parseInlineSegments("`a\\|b`")).toEqual([code("a|b")]);
     expect(parseInlineSegments("pipe \\| escaped")).toEqual([text("pipe | escaped")]);
     expect(parseInlineSegments("**x `\\|` y**")).toEqual([
-      { kind: "strong", children: [text("x "), { kind: "code", text: "|" }, text(" y")] },
+      { kind: "strong", children: [text("x "), code("|"), text(" y")] },
     ]);
     // An escaped backslash before an escaped pipe is a backslash and a pipe.
-    expect(parseInlineSegments("a\\\\\\|b")).toEqual([text("a\\|b")]);
+    // (An escape starts a new run: its `\\` is not in the text.)
+    expect(parseInlineSegments("a\\\\\\|b")).toEqual([text("a"), text("\\|b")]);
   });
 
   it("label offsets still address the source after an escaped pipe earlier in the cell", () => {
@@ -141,7 +145,7 @@ describe("parseInlineSegments", () => {
   });
 
   it("honors backslash escapes", () => {
-    expect(parseInlineSegments("\\*not italic\\*")).toEqual([text("*not italic*")]);
+    expect(parseInlineSegments("\\*not italic\\*")).toEqual([text("*not italic"), text("*")]);
   });
 
   it("returns empty for empty input", () => {
@@ -172,3 +176,86 @@ describe("parseInlineSegments", () => {
     expect(parseInlineSegments("<https://x.y>")).toEqual([text("<https://x.y>")]);
   });
 });
+
+describe("a cell formula before the converter loads (change: render-placeholder-size)", () => {
+  it("is pending — the placeholder — not its TeX (this file never loads the converter)", async () => {
+    const { cellFormula } = await import("./inlineCell");
+    expect(cellFormula("$ax^2 + bx + c = 0$")).toEqual({ kind: "pending" });
+  });
+});
+
+/**
+ * Painting Find matches and the landing in a cell (change: caret-landing-visible,
+ * design D3): each run knows where it sits in the cell's source, and the pure
+ * `splitRun` cuts a run by marks given in source offsets.
+ */
+describe("runs keep their source range, and marks split them", () => {
+  const runs = (src: string) => {
+    const out: { kind: string; text: string; src: string }[] = [];
+    const walk = (segs: InlineSegment[]) => {
+      for (const s of segs) {
+        if (s.kind === "text" || s.kind === "code") out.push({ kind: s.kind, text: s.text, src: src.slice(s.from, s.to) });
+        else if ("children" in s) walk(s.children);
+      }
+    };
+    walk(parseInlineSegments(src));
+    return out;
+  };
+
+  it("a run's range is its text in the source, through markup, code, links and escaped pipes", () => {
+    expect(runs("in the cell")).toEqual([{ kind: "text", text: "in the cell", src: "in the cell" }]);
+    expect(runs("a **the** b")).toEqual([
+      { kind: "text", text: "a ", src: "a " },
+      { kind: "text", text: "the", src: "the" },
+      { kind: "text", text: " b", src: " b" },
+    ]);
+    expect(runs("run `the` now")[1]).toEqual({ kind: "code", text: "the", src: "the" });
+    expect(runs("see [the docs](https://example.com)")[1]).toEqual({ kind: "text", text: "the docs", src: "the docs" });
+    // `\|` is one character of the text and two of the source.
+    expect(runs("a \\| the")).toEqual([{ kind: "text", text: "a | the", src: "a \\| the" }]);
+  });
+
+  const marked = (src: string, marks: CellMark[]) => {
+    const display = displayOffsetOf(src);
+    const out: string[] = [];
+    const walk = (segs: InlineSegment[]) => {
+      for (const s of segs) {
+        if (s.kind === "text" || s.kind === "code") {
+          for (const p of splitRun(s.text, display(s.from), marks, display)) out.push(p.kind ? `[${p.kind}:${p.text}]` : p.text);
+        } else if ("children" in s) walk(s.children);
+      }
+    };
+    walk(parseInlineSegments(src));
+    return out.join("|");
+  };
+  const at = (src: string, word: string, kind: CellMark["kind"] = "match"): CellMark => {
+    const from = src.indexOf(word);
+    return { from, to: from + word.length, kind };
+  };
+
+  it("paints a match in plain text, bold, code and a link label", () => {
+    expect(marked("in the cell", [at("in the cell", "the")])).toBe("in |[match:the]| cell");
+    expect(marked("a **the** b", [at("a **the** b", "the", "current")])).toBe("a |[current:the]| b");
+    expect(marked("run `the` now", [at("run `the` now", "the")])).toBe("run |[match:the]| now");
+    const link = "see [the docs](https://example.com)";
+    expect(marked(link, [at(link, "the", "selection")])).toBe("see |[selection:the]| docs");
+  });
+
+  it("a match spanning markup is painted on each run it covers", () => {
+    // Find reads the source: `t**he` is no match, so the match is drawn on the
+    // text `the` here as it would be found in `t**he**` by a source query `t**he`.
+    const src = "t**he** split";
+    expect(marked(src, [{ from: 0, to: 5, kind: "match" }])).toBe("[match:t]|[match:he]| split");
+  });
+
+  it("source offsets after an escaped pipe land on the right characters", () => {
+    const src = "a \\| the";
+    expect(marked(src, [at(src, "the")])).toBe("a | |[match:the]");
+  });
+
+  it("the current match wins over a plain match it overlaps", () => {
+    const src = "the";
+    expect(marked(src, [at(src, "the"), at(src, "the", "current")])).toBe("[current:the]");
+  });
+});
+

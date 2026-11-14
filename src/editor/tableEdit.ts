@@ -499,6 +499,33 @@ export function reflowChangeIfNeeded(tableText: string, tableFrom: number): Tabl
   return { from: tableFrom, to: tableFrom + tableText.length, insert: canonical };
 }
 
+/**
+ * Where `pos` lands once `reflow` (from `reflowChangeIfNeeded` on the table
+ * `oldText` at `tableFrom`) is applied: a position inside a cell's text keeps
+ * its cell and its offset in it (a reflow only pads, it never changes a cell's
+ * text). The reflow replaces the whole table, so mapping through the change
+ * would drop every inside position at the table's start. Anything else (a
+ * pipe, padding, the delimiter row, outside the table) maps as the change maps
+ * it. Pure.
+ */
+export function posAfterReflow(oldText: string, tableFrom: number, reflow: TableChange, pos: number): number {
+  const before = parseTable(oldText, tableFrom);
+  const after = parseTable(reflow.insert, reflow.from);
+  const shift = reflow.insert.length - (reflow.to - reflow.from);
+  if (pos >= reflow.to) return pos + shift;
+  if (pos <= reflow.from) return pos;
+  if (before && after) {
+    for (const [ri, row] of before.rows.entries()) {
+      for (const [ci, cell] of row.cells.entries()) {
+        if (pos < cell.from || pos > cell.to) continue;
+        const target = cellSourceRange(after, ri, ci);
+        if (target) return Math.min(target.from + (pos - cell.from), target.to);
+      }
+    }
+  }
+  return reflow.from;
+}
+
 // --- insert (change: table-insert-command) ----------------------------------
 
 /** Default column count for a freshly inserted table (design D1). */

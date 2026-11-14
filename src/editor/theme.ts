@@ -1,11 +1,12 @@
 import { CONTROL_SIZE } from "@/components/ui/control";
+import { HSCROLL_STYLE } from "./hscroll";
 import { EditorView } from "@codemirror/view";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
 import { zoomed } from "./contentZoom";
 import { insetStyles } from "./insets/decorate";
-import { COVERED_ATTR, HOST_CLASS, HOST_INLINE_CLASS } from "./selectionPaint";
-import { TYPE_SCALE, editorTokenDefaults, headingType } from "./tokens";
+import { COVERED_ATTR, HOST_CLASS, HOST_INLINE_CLASS, LANDING_ATTR } from "./selectionPaint";
+import { TABLE_CELL_BOX, TYPE_SCALE, editorTokenDefaults, headingType } from "./tokens";
 import { editorStyleBase } from "./primitives";
 
 /**
@@ -105,13 +106,16 @@ export const NATIVE_SELECTION_OFF = { backgroundColor: "transparent !important" 
  * too, the way browsers tint a selected image. The editor sits straight on the
  * body's `--background` (measured), so the mask is invisible.
  */
-const SELECTED_HOST = `.${HOST_CLASS}[${COVERED_ATTR}]`;
+// A block holding the landing it cannot paint finer is drawn as selected — the
+// same one look (spec: caret-rules / 落点看得见, outcome 3).
+const SELECTED_HOST = `.${HOST_CLASS}[${COVERED_ATTR}], .${HOST_CLASS}[${LANDING_ATTR}]`;
+const SELECTED_HOST_AFTER = `.${HOST_CLASS}[${COVERED_ATTR}]::after, .${HOST_CLASS}[${LANDING_ATTR}]::after`;
 const selectedStateStyles = {
   [`.${HOST_CLASS}`]: { position: "relative" },
   // An image inside a line: shrink-wraps the image, still capped at the column.
   [`.${HOST_INLINE_CLASS}`]: { display: "inline-block", maxWidth: "100%", verticalAlign: "top" },
   [SELECTED_HOST]: { backgroundColor: "var(--ome-bg)" },
-  [`${SELECTED_HOST}::after`]: {
+  [SELECTED_HOST_AFTER]: {
     content: "''",
     position: "absolute",
     inset: "0",
@@ -222,6 +226,14 @@ export const editorMarkTheme = EditorView.theme({
   "&.cm-focused": { outline: "none" },
   ".cm-line": { padding: "0" },
   ".cm-cursor": { borderLeftColor: "var(--ome-fg)", borderLeftWidth: "2px" },
+  // No drawn caret where keys do not type (spec: caret-rules / 落点看得见, L3):
+  // `base.ts` marks a non-editable view; selection ranges keep painting.
+  "&.om-no-caret > .cm-scroller > .cm-cursorLayer": { display: "none" },
+  // The landing's visible stand-in (a hidden URL's link text in Reading mode)
+  // and the landing painted in a table cell: the selection fill.
+  ".om-landing": { background: SELECTION_FILL },
+  // Marks painted inside table cells are `<mark>`s: keep the text's own ink.
+  "mark.om-landing, mark.cm-searchMatch": { color: "inherit" },
   [`${SELECTION_SELECTOR_UNFOCUSED}, ${SELECTION_SELECTOR_FOCUSED}`]: {
     background: SELECTION_FILL,
   },
@@ -401,29 +413,63 @@ export const editorMarkTheme = EditorView.theme({
   // Rendered math (change: code-highlight-and-math). MathML lays itself out; we
   // only give block math its own centered line with horizontal scroll for wide
   // equations, and keep inline math on the text baseline.
+  // Its sideways scroll and edge cue are HSCROLL_STYLE's (./hscroll.ts).
   ".om-math-block": {
     display: "block",
     textAlign: "center",
     padding: "0.3em 0",
-    overflowX: "auto",
+    ...HSCROLL_STYLE,
   },
   ".om-math-inline": { display: "inline-block" },
-  // A mermaid diagram (change: editor-mermaid): centred, never wider than the
-  // text column — mermaid sizes its SVG to width 100% with a max-width of its
-  // natural width; a wider diagram scales down rather than scrolling.
-  // Contained (design D10): whatever a diagram's CSS might still try, it paints
-  // only inside its own box — no overlay on the editor or the page.
+  // A mermaid diagram (change: editor-mermaid): centred — mermaid sizes its SVG
+  // to width 100% with a max-width of its natural width, so a wider diagram
+  // scales down to the column, but only to the readable floor (`min-width` set
+  // by `MermaidWidget`; change: mermaid-large-diagrams, design D5); past that it
+  // scrolls sideways in its own box. A scroll container still clips what it
+  // paints, and `contain: paint` stays: contained (design D10), whatever a
+  // diagram's CSS might still try, it paints only inside its own box.
   ".om-mermaid": {
     display: "block",
     position: "relative",
-    overflow: "hidden",
-    contain: "paint",
+    // Sideways scroll and its cue: the one definition (`hscroll.ts`; watcher in `MermaidWidget`).
+    ...HSCROLL_STYLE,
+    overflowY: "hidden",
+    // `inline-size` as on `.om-table-wrap`: the box's width is the column's,
+    // never the diagram's, so a wide diagram scrolls in here and never makes
+    // `.cm-content` (and the editor) scroll sideways.
+    contain: "inline-size paint",
     textAlign: "center",
     padding: "0.5em 0",
     cursor: "text",
   },
   ".om-mermaid svg": { maxWidth: "100%", height: "auto" },
+  // A large diagram's hint inside its placeholder (change: mermaid-large-diagrams):
+  // centred words and the Render button, in the muted ink.
+  ".om-mermaid-hint": {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "0.5em",
+    padding: "0.5em 1em",
+    textAlign: "center",
+    color: "var(--ome-muted-fg)",
+  },
+  ".om-mermaid-hint p": { margin: "0" },
   ".om-math-block math, .om-math-inline math": { fontSize: "1.05em" },
+  // The one placeholder (change: render-placeholder-size, design D2): a
+  // rendered thing not drawn yet. A quiet empty box — the code surface, the
+  // editor radius, no animation; padding, never margin, so CodeMirror measures
+  // all of it. Its size is set per box from the one size order (`blocks/pending.ts`).
+  ".om-pending": {
+    backgroundColor: "var(--ome-code-bg)",
+    borderRadius: "var(--ome-radius)",
+    boxSizing: "border-box",
+    cursor: "text",
+  },
+  // A block box centres what a deferred block puts in it (its content slot).
+  '.om-pending[data-om-pending="block"]': { display: "flex", flexDirection: "column", justifyContent: "center", margin: "0", padding: "0.3em 0" },
+  '.om-pending[data-om-pending="inline"]': { display: "inline-block", verticalAlign: "bottom" },
   // A renderer that could not render: its source stays, with this quiet mark
   // (change: block-fallback, design D2). Underline, not colour or an icon —
   // it takes no room and pushes nothing; muted, not --destructive (red is for
@@ -509,7 +555,9 @@ export const editorMarkTheme = EditorView.theme({
   // line is in view — on a pane narrower than one table (a phone, a narrow
   // embed) every line of text runs off the right edge instead of the table
   // scrolling in its own box (change: editor-site, found on the 390px page).
-  ".om-table-wrap": { padding: "0.5em 0", overflowX: "auto", contain: "inline-size" },
+  //
+  // The sideways scroll and its edge cue are HSCROLL_STYLE's (./hscroll.ts).
+  ".om-table-wrap": { padding: "0.5em 0", ...HSCROLL_STYLE, contain: "inline-size" },
   ".om-table": {
     borderCollapse: "collapse",
     // `max-content`, NOT `auto`: an auto-layout table shrinks to fit its container
@@ -523,7 +571,8 @@ export const editorMarkTheme = EditorView.theme({
   },
   ".om-table th, .om-table td": {
     border: "1px solid var(--ome-border)",
-    padding: "0.3em 0.75em",
+    // Padding and the empty-cell floor: the one cell box, shared with the export.
+    ...TABLE_CELL_BOX,
     // Default; per-column `:---:` alignment is applied as an inline style on the
     // cell (change: smart-table-editing) and overrides this (spec: 列对齐体现在渲染).
     textAlign: "left",
@@ -559,9 +608,17 @@ export const editorMarkTheme = EditorView.theme({
   // wrapper's PADDING (inside CM's measured box), never margin (spec: 渲染态点击
   // 落点精度). Neutral surface; hover and the editing part (data-selected) are
   // `.ome-state`'s fills, like an edited table cell.
+  //
+  // The block lays out by ITS OWN width, never the viewport's (change:
+  // demo-phone-and-list-indent, design D3; spec: Properties 块按自身宽度排版): it is
+  // a size container, and below 26em of its own type (≈374px at the default
+  // size; em so the content zoom scales it) each row stacks — name and ✕ on
+  // one line, the value under it across the full row. An embedded editor's
+  // width is not the viewport's, so a media query would be wrong in a side panel.
   ".om-props": {
     padding: "0.4em 0 0.9em",
     fontSize: "0.9em",
+    containerType: "inline-size",
   },
   ".om-prop-row": {
     display: "grid",
@@ -590,6 +647,11 @@ export const editorMarkTheme = EditorView.theme({
   ".om-prop-del": { gridColumn: "4", alignSelf: "center", visibility: "hidden" },
   ".om-prop-row:hover .om-prop-del": { visibility: "visible" },
   ".om-props-foot": { display: "flex", gap: "0.5em", padding: "0.25em 0.5em 0" },
+  "@container (max-width: 26em)": {
+    ".om-prop-row": { gridTemplateColumns: "1fr auto auto" },
+    ".om-prop-value": { gridColumn: "1 / -1", gridRow: "2" },
+    ".om-prop-del": { gridColumn: "3", gridRow: "1" },
+  },
 
   // Find panel (change: find-ui) — chrome and controls use editor tokens only,
   // so the scheme flipping the tokens restyles the panel automatically.
@@ -730,7 +792,8 @@ export const markdownHighlighting = syntaxHighlighting(
     // mark, which wraps this span — a size here too would compound (0.81em).
     { tag: t.monospace, fontFamily: "var(--ome-font-mono)" },
     { tag: t.url, color: "var(--ome-muted-fg)" },
-    { tag: t.link, color: "var(--ome-accent)" },
+    // No `t.link` rule: the parser tags every bracket pair, link or not. The
+    // link colour is `.om-link`, added only where `isLink` says so (linkRefs.ts).
     { tag: t.quote, color: "var(--ome-muted-fg)" },
     { tag: t.contentSeparator, color: "var(--ome-muted-fg)" },
     // Formatting marks (#, **, `, >, ...) — muted when revealed

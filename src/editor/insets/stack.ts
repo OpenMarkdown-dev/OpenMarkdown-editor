@@ -3,7 +3,7 @@ import { treeUpTo } from "../syntax";
 import type { SyntaxNode } from "@lezer/common";
 import { linePrefix, type ContainerMark } from "../structure/prefix";
 import { parseCallout, type CalloutSuffix, type CalloutType } from "../callout";
-import { BULLET_CHARS } from "./metrics";
+import { BULLET_CHARS, itemCheckbox, listBox, type Len } from "./metrics";
 import type { Layer } from "./compose";
 
 /**
@@ -17,7 +17,7 @@ import type { Layer } from "./compose";
  *
  * This module only ANNOTATES that reading with what rendering needs and the
  * structure keys do not: whether a quote is a callout (and its type), how many
- * visible characters a list's marker box is sized for, whether an item is a
+ * the marker box of each list, whether an item is a
  * task, and whether the line is code. Geometry is not decided here — see
  * `compose.ts`.
  */
@@ -39,13 +39,13 @@ export interface LineContainers {
   gap: Array<[number, number]>;
 }
 
-/** Per-pass memo: callout type per quote, marker characters per ordered list. */
+/** Per-pass memo: callout type per quote, marker box per list. */
 export interface StackCache {
   callout: Map<number, CalloutType | null>;
-  orderedChars: Map<number, number>;
+  listBox: Map<number, Len>;
 }
 
-export const newStackCache = (): StackCache => ({ callout: new Map(), orderedChars: new Map() });
+export const newStackCache = (): StackCache => ({ callout: new Map(), listBox: new Map() });
 
 /**
  * A callout's type, its written suffix, where its `[!TYPE]` text starts (`from`) and
@@ -78,23 +78,29 @@ function calloutType(state: EditorState, quote: SyntaxNode, cache: StackCache): 
 }
 
 /**
- * Visible marker characters an item's marker box is sized for. A bullet renders
- * as one glyph. An ordered list is sized for its WIDEST marker, so `9.` and `10.`
- * in one list share a content column and `100.` never overflows its box.
+ * The marker box of the list `item` is in, read once per list. A bullet renders
+ * as one glyph; an ordered list is sized for its WIDEST marker, so `9.` and `10.`
+ * share a content column and `100.` never overflows its box; and a list with any
+ * task item is sized for the checkbox (`listBox`, metrics.ts — the rule).
  */
-function markerChars(item: SyntaxNode, cache: StackCache): number {
+function itemListBox(item: SyntaxNode, cache: StackCache): Len {
   const list = item.parent;
-  if (!list || list.name !== "OrderedList") return BULLET_CHARS;
-  let n = cache.orderedChars.get(list.from);
-  if (n === undefined) {
-    n = 1;
+  if (!list) return listBox({ ordered: false, chars: BULLET_CHARS, task: isTask(item) });
+  let box = cache.listBox.get(list.from);
+  if (box === undefined) {
+    const ordered = list.name === "OrderedList";
+    let chars = ordered ? 1 : BULLET_CHARS;
+    let task = false;
     for (let c = list.firstChild; c; c = c.nextSibling) {
-      const m = c.name === "ListItem" ? c.getChild("ListMark") : null;
-      if (m) n = Math.max(n, m.to - m.from);
+      if (c.name !== "ListItem") continue;
+      if (isTask(c)) task = true;
+      const m = ordered ? c.getChild("ListMark") : null;
+      if (m) chars = Math.max(chars, m.to - m.from);
     }
-    cache.orderedChars.set(list.from, n);
+    box = listBox({ ordered, chars, task });
+    cache.listBox.set(list.from, box);
   }
-  return n;
+  return box;
 }
 
 const isTask = (item: SyntaxNode) => !!item.getChild("Task");
@@ -117,9 +123,9 @@ function layersOf(state: EditorState, marks: ContainerMark[], cache: StackCache,
     }
     return {
       kind: "list",
-      markerChars: markerChars(m.node, cache),
+      box: itemListBox(m.node, cache),
       markerLine: asMarker && m.markerLine,
-      task: isTask(m.node),
+      checkbox: itemCheckbox(isTask(m.node)),
     };
   });
 }

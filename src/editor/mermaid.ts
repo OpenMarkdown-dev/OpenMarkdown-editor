@@ -36,6 +36,11 @@ import { diagramDeclarationProblem, mermaidMarkup, type SafeMarkup } from "./mar
  *   own renders are serialized so they cannot interleave with each other.
  */
 
+// The size metric, the threshold and the wide-diagram floor: defined once in
+// `./mermaidSize.ts` (a leaf the measuring script imports), read through here.
+export { LARGE_DIAGRAM_SIZE, MIN_DIAGRAM_SCALE, diagramFloorWidth, diagramSize, diagramViewBox, shownDiagramWidth } from "./mermaidSize";
+import { LARGE_DIAGRAM_SIZE, diagramSize } from "./mermaidSize";
+
 /** The fence info string that marks a diagram (GitHub's: exact, lowercase). */
 export const MERMAID_INFO = "mermaid";
 
@@ -146,6 +151,15 @@ const cache = new Map<string, RenderResult<SafeMarkup>>();
  */
 const inflight = new Map<string, Map<() => void, () => boolean>>();
 
+// --- Large diagrams (change: mermaid-large-diagrams, D2) --------------------
+// Whether the user asked for a given BLOCK is per editor state, so it lives
+// with the block entry (`blocks/mermaid.ts`, `waitsForUser`); here only the size.
+
+/** Is this a large diagram (above the threshold)? The one size comparison. */
+export function isLargeDiagram(body: string): boolean {
+  return diagramSize(body) > LARGE_DIAGRAM_SIZE;
+}
+
 /** Remember a finished render (also how tests seed a rendered sample). */
 export function rememberMermaid(body: string, scheme: ColorScheme, result: RenderResult<SafeMarkup>): void {
   const key = cacheKey(body, scheme);
@@ -184,24 +198,81 @@ export interface MermaidModule {
 }
 
 let loaded: Promise<MermaidModule | null> | null = null;
+let lastLoadFailed = false;
+
+/**
+ * Did the last load of mermaid fail? Then a diagram with no result is "not
+ * mine" (its source, unmarked), not "not yet" — a placeholder must not wait on
+ * a load that ended (change: render-placeholder-size, design D5). Cleared by
+ * the next load that succeeds.
+ */
+export function mermaidLoadFailed(): boolean {
+  return lastLoadFailed;
+}
 
 function loadMermaid(load: MermaidLoader): Promise<MermaidModule | null> {
   if (!loaded) {
     loaded = load()
+      .then((m) => {
+        lastLoadFailed = false;
+        return m;
+      })
       .catch((e: unknown) => {
         // A failed LOAD is not a diagram that cannot render: every diagram stays
         // source, unmarked; the next request tries again.
         logError("mermaid load", e);
         loaded = null;
+        lastLoadFailed = true;
         return null;
       });
   }
   return loaded;
 }
 
+/**
+ * The three steps of showing a diagram, as `performance` measures (change:
+ * mermaid-large-diagrams, design D1): Mermaid's own layout (`render`), our
+ * sanitiser (`sanitize`), and putting the SVG into the page (`insert`, in
+ * `MermaidWidget.toDOM`). Read by `scripts/measure-mermaid-render.mjs`, and in
+ * the app's Web Inspector timeline under the same names. Measures with explicit
+ * times, so no marks pile up. Returns the end time, the next step's start.
+ */
+export const MERMAID_MEASURES = ["om-mermaid:render", "om-mermaid:sanitize", "om-mermaid:insert"] as const;
+
+export function measureMermaidStep(step: "render" | "sanitize" | "insert", start: number): number {
+  const end = performance.now();
+  performance.measure(`om-mermaid:${step}`, { start, end });
+  return end;
+}
+
 let seq = 0;
 /** Our renders, one at a time (they share mermaid's global config). */
 let queue: Promise<unknown> = Promise.resolve();
+
+/**
+ * Wait until the page has painted once (design D4): a large render blocks the
+ * main thread, so the "Rendering…" state must be on screen before it starts.
+ * A frame, then a task; a `setTimeout` fallback so a hidden page (no frames)
+ * still goes on. Replaceable for tests only (`setFrameScheduler`).
+ */
+type FrameScheduler = (go: () => void) => void;
+const paintedFrame: FrameScheduler = (go) => {
+  let done = false;
+  const once = () => {
+    if (!done) {
+      done = true;
+      go();
+    }
+  };
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => setTimeout(once, 0));
+  setTimeout(once, 100);
+};
+let frameScheduler: FrameScheduler = paintedFrame;
+
+/** Tests only: drive the "one frame" wait by hand; no argument restores it. */
+export function setFrameScheduler(fn?: FrameScheduler): void {
+  frameScheduler = fn ?? paintedFrame;
+}
 
 /**
  * Render `body` with our config, leaving mermaid's site config as we found it.
@@ -211,12 +282,18 @@ let queue: Promise<unknown> = Promise.resolve();
 export function renderWith(mermaid: MermaidModule, body: string, scheme: ColorScheme): Promise<SafeMarkup> {
   const before = mermaid.mermaidAPI.getSiteConfig();
   mermaid.initialize(mermaidConfig(scheme));
+  const start = performance.now();
   return mermaid.mermaidAPI
     .render(`om-mermaid-${++seq}`, body)
     .then(
       // Through the editor's one HTML sink (`./markup.ts`): anything outside the
       // diagram profile throws here and the diagram falls back to its source.
-      (r) => mermaidMarkup(normalizeDiagram(r.svg)),
+      (r) => {
+        const laidOut = measureMermaidStep("render", start);
+        const svg = mermaidMarkup(normalizeDiagram(r.svg));
+        measureMermaidStep("sanitize", laidOut);
+        return svg;
+      },
       (e: unknown) => {
         throw new Error(mermaidReason(e));
       },
@@ -281,7 +358,8 @@ export function mermaidReason(e: unknown): string {
 /**
  * Ask for (body, scheme) to be rendered. Once it has — rendered or failed —
  * `done` runs (asynchronously) so the caller can redraw. Already cached: nothing
- * to do. Already in flight: `done` joins its waiters. A failed load calls nothing.
+ * to do. Already in flight: `done` joins its waiters. A failed load calls every
+ * waiter too, so a placeholder turns back into source (`mermaidLoadFailed`).
  *
  * `wanted` says whether this caller still wants this exact (body, scheme). It is
  * asked when the render's turn in the queue comes: if no waiter still wants it
@@ -307,9 +385,25 @@ export function requestMermaid(
   inflight.set(key, waiters);
   queue = queue.then(async () => {
     const mermaid = await loadMermaid(load);
-    if (!mermaid || ![...waiters.values()].some((w) => w())) {
+    if (!mermaid) {
+      // The load failed: tell the waiters, whose placeholders become source.
+      inflight.delete(key);
+      for (const fn of waiters.keys()) queueMicrotask(fn);
+      return;
+    }
+    const stillWanted = () => [...waiters.values()].some((w) => w());
+    if (!stillWanted()) {
       inflight.delete(key);
       return;
+    }
+    // A large render freezes the page: let "Rendering…" paint first — and ask
+    // again after it, since the source may have been typed past meanwhile.
+    if (isLargeDiagram(body)) {
+      await new Promise<void>((go) => frameScheduler(go));
+      if (!stillWanted()) {
+        inflight.delete(key);
+        return;
+      }
     }
     // Still in `inflight` while it renders: a request arriving now joins and hears.
     const result = await attemptRenderAsync(() => renderWith(mermaid, body, scheme));

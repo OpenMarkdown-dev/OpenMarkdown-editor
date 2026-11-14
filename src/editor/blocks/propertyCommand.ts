@@ -1,5 +1,6 @@
 import type { EditorView } from "@codemirror/view";
 import { editorString } from "../strings";
+import { newPropertyLine, writeScalar } from "../frontmatterProps";
 import { blockDecorationField } from "./field";
 import { addProperty, canInsertProperty, parsePropsOf, setActiveProp } from "./properties";
 
@@ -24,11 +25,12 @@ export function insertProperty(view: EditorView): void {
   if (p && rendersBlocks) return addProperty(view, p);
   const name = editorString("props.newName");
   const from = p ? p.closeFrom : 4;
+  const line = newPropertyLine(name);
   view.dispatch({
-    changes: p ? { from, insert: `${name}: \n` } : { from: 0, insert: `---\n${name}: \n---\n\n` },
+    changes: p ? { from, insert: line } : { from: 0, insert: `---\n${line}---\n\n` },
     effects: setActiveProp.of({ index: p ? p.props.length : 0, part: "key", caret: "all" }),
     // Source mode has no Properties block to edit in, so select the name itself.
-    ...(rendersBlocks ? {} : { selection: { anchor: from, head: from + name.length } }),
+    ...(rendersBlocks ? {} : { selection: { anchor: from, head: from + writeScalar(name, "key", null).length } }),
     userEvent: "input",
     scrollIntoView: true,
   });

@@ -12,18 +12,21 @@ import {
 import { activeEditField, cellSync, setActiveEdit } from "./tableInlineEdit";
 import { historyKeyOf } from "./historyKey";
 import { tableRangeAt } from "./tableCommands";
-import { renderInlineCell } from "./inlineCell";
+import { renderInlineCell, type TableCellMark } from "./inlineCell";
 import { loadMathThenRedraw } from "./mathLoad";
 import { tableClickAction } from "./tableClick";
 import { followLink } from "./linkNavigate";
 import { exitBlock } from "./blocks/exit";
+import { clickRevealsSource } from "./blocks/pending";
 import { lineAfterBlock } from "./blocks/geometry";
 import { buildPartEditor, partEditorIn, reseedPart } from "./blocks/partEditor";
 import { BULLET_GLYPH } from "./previewConceal";
+import { unwatchHScroll, watchHScroll } from "./hscroll";
 import { editorString } from "./strings";
 import type { ImageLabel } from "./imageAlt";
 import { imageElement } from "./imageElement";
 import { setMarkup, type SafeMarkup } from "./markup";
+import { diagramFloorWidth, diagramViewBox, measureMermaidStep, shownDiagramWidth } from "./mermaid";
 import { livePreviewConfig } from "./previewConfig";
 import { editorEnvironment } from "./environment";
 import { CalloutType, calloutTitle } from "./callout";
@@ -122,7 +125,11 @@ export class BlockMathWidget extends WidgetType {
     const wrap = document.createElement("div");
     wrap.className = "om-math-block";
     setMarkup(wrap, this.mathml, view);
+    watchHScroll(wrap);
     return clickRevealsSource(wrap, view, this.from);
+  }
+  destroy(dom: HTMLElement) {
+    unwatchHScroll(dom);
   }
   ignoreEvent(event: Event) {
     return event.type === "mousedown";
@@ -130,26 +137,16 @@ export class BlockMathWidget extends WidgetType {
 }
 
 /**
- * An A block's rendered body (block math, a mermaid diagram): own the mousedown
- * so a click drops the caret at the block's start, which the A reveal then
- * expands into source — the replaced range is atomic, so CM's default click
- * cannot place the caret (mirrors TableWidget). Pair with an `ignoreEvent` that
- * claims "mousedown".
- */
-function clickRevealsSource(wrap: HTMLElement, view: EditorView, from: number): HTMLElement {
-  wrap.addEventListener("mousedown", (e) => {
-    e.preventDefault();
-    view.dispatch({ selection: { anchor: from } });
-    view.focus();
-  });
-  return wrap;
-}
-
-/**
  * A rendered mermaid diagram — A (change: editor-mermaid). `svg` already went
  * through the editor's one HTML sink (`mermaidMarkup` in `./markup.ts`: no
  * links, handlers, foreign islands or remote `url()`, scoped CSS only); a click
- * reveals the fence's source.
+ * reveals the fence's source — but not a press on the box's own scrollbar.
+ *
+ * Wide diagrams (change: mermaid-large-diagrams, design D5): Mermaid writes
+ * `width="100%"` and `max-width: <natural>px`, so the SVG shrinks to the column;
+ * a `min-width` from `diagramFloorWidth` (CSSOM, the CSP-safe path) stops a WIDE
+ * one at the readable floor, past which `.om-mermaid` scrolls sideways; a tall
+ * one gets no floor and is fitted to the column.
  */
 export class MermaidWidget extends WidgetType {
   constructor(
@@ -164,18 +161,34 @@ export class MermaidWidget extends WidgetType {
   toDOM(view: EditorView) {
     const wrap = document.createElement("div");
     wrap.className = "om-mermaid";
+    const start = performance.now();
     setMarkup(wrap, this.svg, view);
+    measureMermaidStep("insert", start);
+    const box = diagramViewBox(this.svg);
+    // The diagram's root element (the one child `setMarkup` put in).
+    const root = wrap.firstElementChild;
+    const floor = box && diagramFloorWidth(box);
+    if (floor && root instanceof SVGElement) root.style.minWidth = `${floor}px`;
+    watchHScroll(wrap);
     return clickRevealsSource(wrap, view, this.from);
   }
-  ignoreEvent(event: Event) {
-    return event.type === "mousedown";
+  destroy(dom: HTMLElement) {
+    unwatchHScroll(dom);
   }
-  /** The SVG's own height (its viewBox), for CM's estimate while off-screen. */
+  ignoreEvent(event: Event) {
+    // The click too: a wide diagram reveals on a plain click (`clickRevealsSource`).
+    return event.type === "mousedown" || event.type === "click";
+  }
+  /** The SVG's height at the width it is shown at in a full text column, for CM's estimate while off-screen. */
   get estimatedHeight(): number {
-    const m = /viewBox="[-\d.e]+ [-\d.e]+ [-\d.e]+ ([\d.e]+)"/.exec(this.svg);
-    return m ? Math.ceil(Number(m[1])) : -1;
+    const box = diagramViewBox(this.svg);
+    if (!box || !(box.width > 0)) return -1;
+    return Math.ceil((box.height * shownDiagramWidth(box, ESTIMATE_COLUMN_PX)) / box.width);
   }
 }
+
+/** The text column in px at the default body size (`TYPE_SCALE.measure`, 41rem × 16px), for estimates only. */
+const ESTIMATE_COLUMN_PX = 656;
 
 export class InlineMathWidget extends WidgetType {
   constructor(
@@ -273,6 +286,11 @@ function arrowDir(e: KeyboardEvent): "up" | "down" | "left" | "right" | null {
   return e.key === "ArrowUp" ? "up" : e.key === "ArrowDown" ? "down" : e.key === "ArrowLeft" ? "left" : e.key === "ArrowRight" ? "right" : null;
 }
 
+/** Two tables' marks are the same (order included: both come from one scan). */
+function sameMarks(a: readonly TableCellMark[], b: readonly TableCellMark[]): boolean {
+  return a.length === b.length && a.every((m, i) => m.row === b[i].row && m.col === b[i].col && m.from === b[i].from && m.to === b[i].to && m.kind === b[i].kind);
+}
+
 /**
  * Is the caret already at the edge of its cell in this direction? ↑ / ↓: on the
  * first / last VISUAL line (a wrapped cell has several), i.e. on the same visual
@@ -306,13 +324,20 @@ export class TableWidget extends WidgetType {
      */
     readonly editing: { row: number; col: number; epoch: number } | null = null,
     /**
-     * Was the formula converter loaded when this was built? A cell formula shows
-     * its source until it is; the load's rebuild then differs here, so the table
-     * redraws with the formula (change: cell-tree, design D5).
+     * Where the formula converter was when this was built (`mathState`). A cell
+     * formula shows the placeholder while it loads; the rebuild once it has
+     * loaded — or failed — differs here, so the table redraws with the formula
+     * or its source (change: cell-tree, design D5; render-placeholder-size, D5).
      */
-    readonly mathReady = false,
+    readonly mathState: "loading" | "ready" | "failed" = "loading",
     /** The image epoch it was built at (`imageRefresh.ts`): a refresh redraws the table's images. */
     readonly imageEpoch = 0,
+    /**
+     * Find matches and the landing inside this table, per cell (`blocks/table.ts`
+     * `tableMarks`; spec: caret-rules / 落点看得见). Part of the identity outside
+     * an edit session, so the table redraws only when the marks in it change.
+     */
+    readonly marks: readonly TableCellMark[] = [],
   ) {
     super();
   }
@@ -332,8 +357,9 @@ export class TableWidget extends WidgetType {
     return (
       other.source === this.source &&
       other.from === this.from &&
-      other.mathReady === this.mathReady &&
-      other.imageEpoch === this.imageEpoch
+      other.mathState === this.mathState &&
+      other.imageEpoch === this.imageEpoch &&
+      sameMarks(other.marks, this.marks)
     );
   }
   toDOM(view: EditorView) {
@@ -347,6 +373,8 @@ export class TableWidget extends WidgetType {
     const table = document.createElement("table");
     table.className = "om-table";
     wrap.appendChild(table);
+    // Sideways scroll cue (./hscroll.ts); disposed in `destroy`.
+    watchHScroll(wrap);
     const model = parseTable(this.source, this.from);
     // buildBlockDecorations only builds this widget for parseable tables, but
     // degrade defensively: put a single cell with the raw source rather than
@@ -380,8 +408,10 @@ export class TableWidget extends WidgetType {
           el.appendChild(this.buildCellEditor(view, cell.text, ri, ci, align));
         } else {
           // Inline markdown rendered as styled DOM (detached — CM6 decorations
-          // can't reach here, hence the standalone renderer).
-          el.appendChild(renderInlineCell(cell.text, resolveImage, requestMath));
+          // can't reach here, hence the standalone renderer). Find matches and
+          // the landing are painted by it, from `marks`.
+          const marks = this.marks.filter((m) => m.row === ri && m.col === ci);
+          el.appendChild(renderInlineCell(cell.text, resolveImage, requestMath, marks));
         }
         tr.appendChild(el);
       });
@@ -462,6 +492,7 @@ export class TableWidget extends WidgetType {
 
   destroy(dom: HTMLElement) {
     partEditorIn(dom)?.destroy();
+    unwatchHScroll(dom);
   }
 
   /**

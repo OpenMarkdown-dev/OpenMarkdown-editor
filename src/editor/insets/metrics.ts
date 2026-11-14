@@ -26,6 +26,10 @@
  *     re-pick them.
  *   - TASK_CHECK = 0.8125em: the native checkbox's 13px at the 16px base size,
  *     kept as-is but now expressed in em so it scales with the content zoom.
+ *   - a list's box (`listBox`) = its widest marker's box; a list with a task
+ *     is sized for the checkbox (a bullet task draws the checkbox in the
+ *     bullet's place; an ordered one draws number, then checkbox). One box
+ *     per list, whatever the item.
  */
 
 /** A CSS length as a sum of font-relative and absolute parts. */
@@ -90,5 +94,40 @@ export function markerBox(chars: number): Len {
 /** Width a quote or callout adds before its content. */
 export const QUOTE_BOX: Len = add(QUOTE_BAR, QUOTE_GAP);
 
-/** Width a task checkbox adds after the marker, gap included. */
+/** Width a task checkbox takes in a marker box, its gap included. */
 export const TASK_BOX: Len = add(TASK_CHECK, MARKER_GAP);
+
+/** What a list's marker box has to hold (read once per list by `stack.ts`). */
+export interface ListMarkers {
+  /** An ordered list (`1.`) rather than a bullet one (`-`). */
+  ordered: boolean;
+  /** Visible characters of the list's WIDEST marker (`•` = 1, `100.` = 4). */
+  chars: number;
+  /** Any item of the list is a task. */
+  task: boolean;
+}
+
+/**
+ * The marker box of a list: THE rule for every list kind (change:
+ * demo-phone-and-list-indent, design D1; spec: 列表缩进的视觉层级与折行挂齐). The
+ * box fits the list's widest marker plus one gap, and a task's checkbox IS its
+ * marker: a list with any task item is sized for the checkbox. Every
+ * item of the list gets this one box, so a task item and a plain sibling share a
+ * content column and their children start at the same x. The composer adds it
+ * as is — there is no per-item task term.
+ */
+export function listBox(m: ListMarkers): Len {
+  if (!m.task) return markerBox(m.chars);
+  // A bullet task item draws no bullet — the checkbox takes its place — so a
+  // bullet list holding a task is sized for the checkbox alone. That box is
+  // the wider one whenever 1ch < 0.8125em, true of every prose font (about
+  // 0.5em), so the plain bullets in it sit left in a slightly wider box, like
+  // `1.` in a list sized for `100.`. An ordered task is its number, then the
+  // checkbox.
+  return m.ordered ? add(markerBox(m.chars), TASK_BOX) : TASK_BOX;
+}
+
+/** The checkbox an item draws at the end of its list's marker box (ZERO for a plain item). */
+export function itemCheckbox(task: boolean): Len {
+  return task ? TASK_BOX : ZERO;
+}

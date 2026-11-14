@@ -12,7 +12,9 @@
  *
  * Split in two so the risky part is node-testable without a DOM (no jsdom here):
  *   - `parseInlineSegments(text) -> Segment[]`  PURE, tree→data, unit-tested.
- *   - `renderInlineCell(text) -> DocumentFragment`  thin DOM mapper.
+ *   - `renderInlineCell(text, …, marks) -> DocumentFragment`  thin DOM mapper;
+ *     the marks (Find matches, the landing) are split onto runs by the pure
+ *     `splitRun`.
  *
  * How each inline node is drawn in a cell is the table `CELL_NODES`; a node the
  * grammar produces that is not in it fails `inlineCell.gate.test.ts`, so a new
@@ -25,14 +27,21 @@ import type { SyntaxNode } from "@lezer/common";
 import { dialectMarkdownParser } from "./dialectParser";
 import { readImageLabel, type ImageLabel } from "./imageAlt";
 import { imageElement } from "./imageElement";
-import { mathBody, renderMath } from "./math";
-import { setMarkup } from "./markup";
-import { attemptRender, failedSourceElement } from "./blocks/render";
+import { mathBody, renderFormula } from "./math";
+import { setMarkup, type SafeMarkup } from "./markup";
+import { attemptRender, failedSourceElement, type RenderResult } from "./blocks/render";
+import { pendingElement } from "./blocks/pending";
 import { cellDisplaySource } from "./tableEdit";
 
+/**
+ * `from` / `to` on text and code: where the run's text lies in the cell's source
+ * as written (with its `\|`) — so Find matches and the landing, which are
+ * source ranges, can be painted on the runs they cover (change:
+ * caret-landing-visible, design D3).
+ */
 export type InlineSegment =
-  | { kind: "text"; text: string }
-  | { kind: "code"; text: string }
+  | { kind: "text"; text: string; from: number; to: number }
+  | { kind: "code"; text: string; from: number; to: number }
   | { kind: "strong"; children: InlineSegment[] }
   | { kind: "em"; children: InlineSegment[] }
   | { kind: "strike"; children: InlineSegment[] }
@@ -89,12 +98,19 @@ function kids(node: SyntaxNode): SyntaxNode[] {
   return out;
 }
 
-/** Push text, joining it onto a text segment just before it. */
-function pushText(out: InlineSegment[], text: string): void {
+/**
+ * Push the text at `cell.text[from, to)`, joining it onto a text segment that
+ * ends right where it starts (so a run's text is always one contiguous slice of
+ * the cell's text — an escape's `\` breaks the run).
+ */
+function pushText(out: InlineSegment[], cell: CellText, text: string, from: number): void {
   if (!text) return;
+  const src = { from: cell.at[from], to: cell.at[from + text.length] };
   const last = out[out.length - 1];
-  if (last?.kind === "text") last.text += text;
-  else out.push({ kind: "text", text });
+  if (last?.kind === "text" && last.to === src.from) {
+    last.text += text;
+    last.to = src.to;
+  } else out.push({ kind: "text", text, ...src });
 }
 
 /**
@@ -118,15 +134,16 @@ function segmentsIn(cell: CellText, children: SyntaxNode[], from: number, to: nu
   let at = from;
   for (const c of children) {
     if (c.to <= from || c.from >= to) continue;
-    pushText(out, src.slice(at, c.from));
+    pushText(out, cell, src.slice(at, c.from), at);
     const seg = CELL_NODES[c.name] === "render" ? segmentOf(cell, c) : null;
     if (seg) {
-      if (seg.kind === "text") pushText(out, seg.text);
+      // An escape: its text is the char after the `\`.
+      if (seg.kind === "text") pushText(out, cell, seg.text, c.from + 1);
       else out.push(seg);
-    } else pushText(out, src.slice(c.from, c.to));
+    } else pushText(out, cell, src.slice(c.from, c.to), c.from);
     at = c.to;
   }
-  pushText(out, src.slice(at, to));
+  pushText(out, cell, src.slice(at, to), at);
   return out;
 }
 
@@ -143,10 +160,10 @@ function segmentOf(cell: CellText, node: SyntaxNode): InlineSegment | null {
   const children = kids(node);
   switch (node.name) {
     case "Escape":
-      return { kind: "text", text: src.slice(node.from + 1, node.to) };
+      return { kind: "text", text: src.slice(node.from + 1, node.to), from: cell.at[node.from + 1], to: cell.at[node.to] };
     case "InlineCode": {
       const r = between(node, "CodeMark");
-      return r ? { kind: "code", text: src.slice(r[0], r[1]) } : null;
+      return r ? { kind: "code", text: src.slice(r[0], r[1]), from: cell.at[r[0]], to: cell.at[r[1]] } : null;
     }
     case "InlineMath":
       return { kind: "math", source: src.slice(node.from, node.to) };
@@ -199,25 +216,33 @@ export function parseInlineSegments(src: string): InlineSegment[] {
   const text = cell.text;
   const blocks = kids(dialectMarkdownParser.parse(text).topNode);
   const para = blocks.length === 1 && blocks[0].name === "Paragraph" ? blocks[0] : null;
-  if (!para || text.slice(0, para.from).trim() || text.slice(para.to).trim()) return [{ kind: "text", text }];
+  if (!para || text.slice(0, para.from).trim() || text.slice(para.to).trim()) return [{ kind: "text", text, from: 0, to: src.length }];
   return segmentsIn(cell, kids(para), 0, text.length);
 }
 
 /** Resolve an image path to a loadable URL; null = outside the whitelist (`livePreviewConfig`). */
 type ResolveImage = (src: string) => string | null;
 
+/** What a cell formula shows — pure, the decision `mathElement` draws (tested in node). */
+export function cellFormula(source: string): RenderResult<SafeMarkup> {
+  return attemptRender(() => renderFormula(mathBody(source), false));
+}
+
 /**
  * A cell's inline formula, by the body's rule (spec: 格内行内公式): the converter
- * not loaded yet → the source, and `requestMath` (the editor loads the converter
- * and redraws — see `TableWidget.mathReady`); TeX it cannot render → the source with the one
- * failure mark, the reason on hover; otherwise the formula.
+ * not loaded yet → the one placeholder, and `requestMath` (the editor loads the
+ * converter and redraws — see `TableWidget.mathState`; change:
+ * render-placeholder-size); its load failed → the source, unmarked; TeX it
+ * cannot render → the source with the one failure mark, the reason on hover;
+ * otherwise the formula.
  */
 function mathElement(source: string, requestMath: () => void): Node {
-  const out = attemptRender(() => renderMath(mathBody(source), false));
-  if (out.kind === "source") {
+  const out = cellFormula(source);
+  if (out.kind === "pending") {
     requestMath();
-    return document.createTextNode(source);
+    return pendingElement(source);
   }
+  if (out.kind === "source") return document.createTextNode(source);
   if (out.kind === "failed") return failedSourceElement(source, out.reason);
   const el = document.createElement("span");
   el.className = "om-math-inline";
@@ -226,36 +251,117 @@ function mathElement(source: string, requestMath: () => void): Node {
   return el;
 }
 
+/**
+ * What a cell paints over its source (change: caret-landing-visible, design D3):
+ * a Find match, the current match, the landing (the main selection). Offsets in
+ * the cell's source as written.
+ */
+export interface CellMark {
+  from: number;
+  to: number;
+  kind: "match" | "current" | "selection";
+}
+
+/** A mark in one cell of a table: the cell's grid position and the mark in its source. */
+export interface TableCellMark extends CellMark {
+  row: number;
+  col: number;
+}
+
+/** The classes each mark is drawn with: Find's own (one theme), the landing's. */
+export const CELL_MARK_CLASS: Record<CellMark["kind"], string> = {
+  match: "cm-searchMatch",
+  current: "cm-searchMatch cm-searchMatch-selected",
+  selection: "om-landing",
+};
+
+/** A piece of a run: its text and the mark over it, if any. */
+export interface MarkedPiece {
+  text: string;
+  kind: CellMark["kind"] | null;
+}
+
+/**
+ * Split one run of a cell — `text`, starting at display offset `start` of the
+ * cell's text — by `marks`. `display` maps a cell-source offset to the cell's
+ * text (the `\|` dropped). Later marks win where marks overlap (current over
+ * match). Pure.
+ */
+export function splitRun(
+  text: string,
+  start: number,
+  marks: readonly CellMark[],
+  display: (sourceOffset: number) => number,
+): MarkedPiece[] {
+  const kinds: (CellMark["kind"] | null)[] = new Array(text.length).fill(null);
+  for (const m of marks) {
+    const a = Math.max(display(m.from) - start, 0);
+    const b = Math.min(display(m.to) - start, text.length);
+    for (let i = a; i < b; i++) kinds[i] = m.kind;
+  }
+  const out: MarkedPiece[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const last = out[out.length - 1];
+    if (last && last.kind === kinds[i]) last.text += text[i];
+    else out.push({ text: text[i], kind: kinds[i] });
+  }
+  return out;
+}
+
+/** The marks a cell paints, as the DOM mapper reads them. */
+interface Painting {
+  marks: readonly CellMark[];
+  display: (sourceOffset: number) => number;
+}
+
+/** Text with its marks: plain text nodes and `<mark>` elements. */
+function appendMarked(parent: Node, text: string, from: number, paint: Painting): void {
+  if (paint.marks.length === 0) {
+    parent.appendChild(document.createTextNode(text));
+    return;
+  }
+  for (const piece of splitRun(text, paint.display(from), paint.marks, paint.display)) {
+    if (!piece.kind) {
+      parent.appendChild(document.createTextNode(piece.text));
+      continue;
+    }
+    const mark = document.createElement("mark");
+    mark.className = CELL_MARK_CLASS[piece.kind];
+    mark.textContent = piece.text;
+    parent.appendChild(mark);
+  }
+}
+
 /** Append segments as DOM under `parent` (thin, no logic — mirrors the segment tree). */
-function appendSegments(parent: Node, segs: InlineSegment[], resolveImage: ResolveImage, requestMath: () => void): void {
+function appendSegments(parent: Node, segs: InlineSegment[], resolveImage: ResolveImage, requestMath: () => void, paint: Painting): void {
   for (const s of segs) {
     switch (s.kind) {
       case "text":
-        parent.appendChild(document.createTextNode(s.text));
+        appendMarked(parent, s.text, s.from, paint);
         break;
       case "code": {
         const el = document.createElement("code");
         el.className = "om-inline-code";
-        el.textContent = s.text;
+        appendMarked(el, s.text, s.from, paint);
         parent.appendChild(el);
         break;
       }
       case "strong": {
         const el = document.createElement("strong");
-        appendSegments(el, s.children, resolveImage, requestMath);
+        appendSegments(el, s.children, resolveImage, requestMath, paint);
         parent.appendChild(el);
         break;
       }
       case "em": {
         const el = document.createElement("em");
-        appendSegments(el, s.children, resolveImage, requestMath);
+        appendSegments(el, s.children, resolveImage, requestMath, paint);
         parent.appendChild(el);
         break;
       }
       case "strike": {
         // `<s>` is line-through and nothing else — the body's strikethrough style.
         const el = document.createElement("s");
-        appendSegments(el, s.children, resolveImage, requestMath);
+        appendSegments(el, s.children, resolveImage, requestMath, paint);
         parent.appendChild(el);
         break;
       }
@@ -274,7 +380,7 @@ function appendSegments(parent: Node, segs: InlineSegment[], resolveImage: Resol
         const el = document.createElement("span");
         el.className = "om-link";
         el.dataset.omHref = s.href;
-        if (s.children.length) appendSegments(el, s.children, resolveImage, requestMath);
+        if (s.children.length) appendSegments(el, s.children, resolveImage, requestMath, paint);
         else el.textContent = s.href; // `[](url)` → show the href as visible text
         parent.appendChild(el);
         break;
@@ -297,8 +403,23 @@ function appendSegments(parent: Node, segs: InlineSegment[], resolveImage: Resol
  * editor's own (`livePreviewConfig`), so a cell image loads from where a body
  * image would; `requestMath` asks the editor to load the formula converter.
  */
-export function renderInlineCell(text: string, resolveImage: ResolveImage, requestMath: () => void): DocumentFragment {
+export function renderInlineCell(
+  text: string,
+  resolveImage: ResolveImage,
+  requestMath: () => void,
+  marks: readonly CellMark[] = [],
+): DocumentFragment {
   const frag = document.createDocumentFragment();
-  appendSegments(frag, parseInlineSegments(text), resolveImage, requestMath);
+  appendSegments(frag, parseInlineSegments(text), resolveImage, requestMath, { marks, display: displayOffsetOf(text) });
   return frag;
+}
+
+/** Cell-source offset → offset in the cell's text (GFM's, `\|` dropped). Pure. */
+export function displayOffsetOf(source: string): (sourceOffset: number) => number {
+  const { at } = cellDisplaySource(source);
+  return (s) => {
+    let d = 0;
+    while (d < at.length - 1 && at[d] < s) d++;
+    return d;
+  };
 }

@@ -11,13 +11,21 @@ describe("imageBoxStyle", () => {
     });
   });
 
-  it("a written size wins over the picture's own width", () => {
-    expect(imageBoxStyle({ width: 120 }, 64)).toEqual({ width: "calc(120px * var(--om-content-zoom, 1))" });
+  it("a written width wins over the picture's own width; the picture's ratio holds its height", () => {
+    expect(imageBoxStyle({ width: 120 }, { width: 64, height: 32 })).toEqual({
+      width: "calc(120px * var(--om-content-zoom, 1))",
+      aspectRatio: "64 / 32",
+    });
+    // Both written: the written ratio wins over the picture's.
+    expect(imageBoxStyle({ width: 120, height: 60 }, { width: 64, height: 64 }).aspectRatio).toBe("120 / 60");
   });
 
-  it("an unsized picture: its own pixels, through the same zoom, once it has loaded", () => {
-    expect(imageBoxStyle({}, 64)).toEqual({ width: "calc(64px * var(--om-content-zoom, 1))" });
+  it("an unsized picture: its own pixels, through the same zoom, once its size is known", () => {
+    expect(imageBoxStyle({}, { width: 64, height: 48 })).toEqual({
+      width: "calc(64px * var(--om-content-zoom, 1))",
+      aspectRatio: "64 / 48",
+    });
     expect(imageBoxStyle({})).toEqual({});
-    expect(imageBoxStyle({}, 0)).toEqual({});
+    expect(imageBoxStyle({}, { width: 0, height: 0 })).toEqual({});
   });
 });

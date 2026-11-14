@@ -4,11 +4,9 @@ import {
   FOLD_OFFSET,
   QUOTE_BAR,
   QUOTE_BOX,
-  TASK_BOX,
   ZERO,
   add,
   css,
-  markerBox,
   sub,
   type Len,
 } from "./metrics";
@@ -21,8 +19,9 @@ import {
  * the text column's left edge; each container claims a box at x and moves x on:
  *
  *   quote / callout → a bar at x, then x += bar + gap
- *   list item       → its marker box at x (marker lines draw the marker there),
- *                     then x += marker box (+ checkbox box for a task item)
+ *   list item       → its list's marker box at x (marker lines draw the marker
+ *                     there), then x += that box — one box per list, a task's
+ *                     checkbox included (`listBox`, metrics.ts); no task term
  *   code            → its fill starts at x, then x += code inset
  *
  * Whatever x is after the last container is where the line's text starts. That
@@ -37,12 +36,16 @@ export type Layer =
   | { kind: "callout"; type: CalloutType }
   | {
       kind: "list";
-      /** Visible marker characters the item's list is sized for (`•` = 1, `10.` = 3). */
-      markerChars: number;
+      /** The item's LIST's marker box (`listBox`): the same for every item of the list. */
+      box: Len;
       /** This line carries the item's marker. */
       markerLine: boolean;
-      /** A task item: a checkbox follows the marker. */
-      task: boolean;
+      /**
+       * The item's checkbox, gap included, drawn at the end of the marker box
+       * (`itemCheckbox`; ZERO for a plain item). Never added to x: it is
+       * inside the box. The marker element on the line is the box minus it.
+       */
+      checkbox: Len;
     }
   | { kind: "code" };
 
@@ -86,7 +89,7 @@ export function composeInset(stack: readonly Layer[]): Inset {
   let x: Len = ZERO;
   const bars: Paint[] = [];
   const fills: Paint[] = [];
-  let marker: { x: Len; taskBox: boolean } | null = null;
+  let marker: { x: Len; checkbox: Len } | null = null;
   for (const layer of stack) {
     switch (layer.kind) {
       case "quote":
@@ -100,8 +103,8 @@ export function composeInset(stack: readonly Layer[]): Inset {
         break;
       case "list": {
         // The first marker on the line is the one the row hangs from.
-        if (layer.markerLine && !marker) marker = { x, taskBox: layer.task };
-        x = add(x, markerBox(layer.markerChars), layer.task ? TASK_BOX : ZERO);
+        if (layer.markerLine && !marker) marker = { x, checkbox: layer.checkbox };
+        x = add(x, layer.box);
         break;
       }
       case "code":
@@ -112,7 +115,7 @@ export function composeInset(stack: readonly Layer[]): Inset {
   }
   const content = x;
   const markerOut = marker
-    ? { x: marker.x, width: sub(sub(content, marker.x), marker.taskBox ? TASK_BOX : ZERO) }
+    ? { x: marker.x, width: sub(sub(content, marker.x), marker.checkbox) }
     : null;
   const anchor = markerOut ? markerOut.x : content;
   const last = bars[bars.length - 1];

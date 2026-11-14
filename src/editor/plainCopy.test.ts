@@ -77,6 +77,24 @@ describe("renderedTextForRange", () => {
       // Matches what `LinkLabelWidget` shows (spec: 空文本链接不渲染为空白).
       expect(rendered("[](https://example.com/docs/guide)")).toBe("example.com/docs/…");
     });
+
+    // The one predicate (spec: 方括号是否成链接只有一个判定; change: write-back-valid).
+    it("keeps the brackets of a pair that is not a link", () => {
+      expect(rendered("see [foo] here")).toBe("see [foo] here");
+      expect(rendered("[a][r]")).toBe("[a][r]");
+      expect(rendered("> [!FOOBAR]\n> 未知类型")).toBe("[!FOOBAR]\n未知类型");
+      expect(rendered("> [!note]- Folded")).toBe("[!note]- Folded");
+    });
+
+    it("drops the brackets of a defined reference", () => {
+      const state = stateOf("see [foo] here\n\n[foo]: https://example.com");
+      expect(renderedTextForRange(state, 0, "see [foo] here".length).text).toBe("see foo here");
+    });
+
+    it("a full reference link reads as its text, as the HTML render shows it", () => {
+      const state = stateOf("[a][r] and [r][]\n\n[r]: https://example.com");
+      expect(renderedTextForRange(state, 0, "[a][r] and [r][]".length).text).toBe("a and r");
+    });
   });
 
   describe("lists follow what is on screen", () => {
@@ -89,7 +107,9 @@ describe("renderedTextForRange", () => {
     });
 
     it("renders task markers as visible check glyphs", () => {
-      expect(rendered("- [ ] 待办\n- [x] 完成")).toBe("• ☐ 待办\n• ☑ 完成");
+      // the checkbox is the marker: no bullet before it (as rendered)
+      expect(rendered("- [ ] 待办\n- [x] 完成\n- 普通")).toBe("☐ 待办\n☑ 完成\n• 普通");
+      expect(rendered("1. [ ] 第一步")).toBe("1. ☐ 第一步");
     });
   });
 

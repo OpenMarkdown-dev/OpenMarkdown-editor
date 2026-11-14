@@ -16,7 +16,13 @@ import { listFiles, repoPath } from "../../../scripts/lib/repoFiles.mjs";
  *   after it (Temml's default is false: it paints the error red and returns it);
  * - R2: a try / catch in a renderer module — `editor/blocks/` (bar render.ts),
  *   `editor/math.ts`, `editor/mermaid.ts`, `editor/widgets.ts`;
- * - R3: the failure mark's class named outside render.ts and the editor theme.
+ * - R3: the failure mark's class named outside render.ts and the editor theme;
+ * - R4 (change: render-placeholder-size, design D9): "not yet" answered with
+ *   `null` — in a renderer module, an `if (!…) return null` on a not-ready
+ *   check (`isMathReady()`) or within NOT_READY_WINDOW lines after a render
+ *   cache lookup (`shownMermaid(`). The not-ready answer is `pending(…)`;
+ * - R5: the placeholder's class `om-pending` named outside `blocks/pending.ts`
+ *   and the editor theme, so no module draws its own placeholder.
  *
  * Limits (stated, not hidden): textual, comments stripped first, tests not
  * scanned. A renderer outside these modules that validates by hand and returns
@@ -60,6 +66,12 @@ const isLoaderCatch = (path: string, lines: string[], i: number) =>
     .slice(Math.max(0, i - LOADER_CATCH_WINDOW), i)
     .some((l) => LOADERS[path].test(l));
 
+/** A not-ready probe: the converter check, or a render-cache lookup. */
+const NOT_READY = /\bisMathReady\(\)|\bshownMermaid\(/;
+const NOT_READY_WINDOW = 3;
+/** "Not ready → null": an `if (!x …) return null`, the shape that hides "not yet" as "not mine". */
+const NULL_ON_NOT_READY = /\bif\s*\(\s*!\s*[\w.?]+(?:\(\))?[^)]*\)\s*return\s+null\b/;
+
 const RULES: ((path: string) => Rule)[] = [
   () => ({
     what: "a renderer told not to throw (renderers throw; attemptRender in blocks/render.ts catches)",
@@ -91,6 +103,26 @@ const RULES: ((path: string) => Rule)[] = [
     hits: (lines) => lines.flatMap((l, i) => (/(?<![\w-])om-render-failed/.test(l) ? [i] : [])),
     owners: {
       "editor/blocks/render.ts": "the one failure mark",
+      "editor/theme.ts": "its one style rule",
+    },
+  }),
+  () => ({
+    what: "\"not yet\" answered with null (return pending() — blocks/render.ts; null means \"not mine\")",
+    scope: RENDERER_MODULE,
+    hits: (lines) =>
+      lines.flatMap((l, i) => {
+        if (!NULL_ON_NOT_READY.test(l)) return [];
+        const recent = lines.slice(Math.max(0, i - NOT_READY_WINDOW), i + 1);
+        return recent.some((r) => NOT_READY.test(r)) ? [i] : [];
+      }),
+    owners: {},
+  }),
+  () => ({
+    what: "the placeholder class named outside blocks/pending.ts (use PendingWidget / pendingElement / markPending)",
+    scope: () => true,
+    hits: (lines) => lines.flatMap((l, i) => (/(?<![\w-])om-pending(?![\w-])/.test(l) ? [i] : [])),
+    owners: {
+      "editor/blocks/pending.ts": "the one placeholder",
       "editor/theme.ts": "its one style rule",
     },
   }),
@@ -138,6 +170,12 @@ describe("render-fallback gate", () => {
       ["editor/livePreview.ts", 'deco.push(Decoration.mark({ class: "om-render-failed" }));'],
       // A `.catch` in math.ts that is not the converter's load.
       ["editor/math.ts", 'load("other")\n  .catch((e) => {});'],
+      // R4: "not yet" hidden as "not mine".
+      ["editor/blocks/math.ts", "    if (!isMathReady()) return null;"],
+      ["editor/blocks/mermaid.ts", "    const out = shownMermaid(fence.body, scheme);\n    if (!out || out.kind === \"source\") return null;"],
+      // R5: a second placeholder.
+      ["editor/livePreview.ts", 'el.className = "om-pending";'],
+      ["components/X.tsx", '<div className="om-pending" />'],
     ];
     for (const [path, code] of cases) expect(violations([{ path, code }]), `${path}: ${code}`).toHaveLength(1);
   });
@@ -153,6 +191,14 @@ describe("render-fallback gate", () => {
       ["editor/linkResolve.ts", "try {\n  new URL(x);\n} catch {"],
       ["editor/math.ts", "// throwOnError: false would paint the error red"],
       ["dev/harness/cases.ts", 'document.querySelectorAll("[data-om-render-failed]")'],
+      // R4: the not-ready answer is pending; null for "not mine" is fine.
+      ["editor/blocks/math.ts", "    if (!isMathReady()) return pending();"],
+      ["editor/blocks/mermaid.ts", "    const out = shownMermaid(fence.body, scheme);\n    if (out?.kind === \"source\") return null;\n    if (!out) return pending();"],
+      ["editor/blocks/mermaid.ts", "    if (!fence) return null;"],
+      // R5: the owner, the theme, and a data hook that is not the class.
+      ["editor/blocks/pending.ts", 'const PENDING_CLASS = "om-pending";'],
+      ["editor/theme.ts", '".om-pending": { borderRadius: "var(--ome-radius)" },'],
+      ["dev/harness/cases.ts", 'document.querySelectorAll("[data-om-pending]")'],
     ];
     for (const [path, code] of cases) expect(violations([{ path, code }]), `${path}: ${code}`).toEqual([]);
   });

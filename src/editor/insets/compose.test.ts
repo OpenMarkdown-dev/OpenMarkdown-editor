@@ -1,13 +1,24 @@
 import { describe, expect, it } from "vitest";
 import { composeInset, insetVars, type Layer } from "./compose";
-import { add, css, len, markerBox, FOLD_OFFSET, QUOTE_BAR, QUOTE_BOX, TASK_BOX, sub, type Len } from "./metrics";
+import { add, css, itemCheckbox, len, listBox, markerBox, FOLD_OFFSET, QUOTE_BAR, QUOTE_BOX, TASK_BOX, sub, type Len } from "./metrics";
 
 /** Shorthand stacks. */
 const quote: Layer = { kind: "quote" };
 const note: Layer = { kind: "callout", type: "note" };
 const code: Layer = { kind: "code" };
-const bullet = (markerLine: boolean, task = false): Layer => ({ kind: "list", markerChars: 1, markerLine, task });
-const ordered = (chars: number, markerLine: boolean): Layer => ({ kind: "list", markerChars: chars, markerLine, task: false });
+/** A bullet item; `task` makes it a task item in a task-bearing list. */
+const bullet = (markerLine: boolean, task = false): Layer => ({
+  kind: "list",
+  box: listBox({ ordered: false, chars: 1, task }),
+  markerLine,
+  checkbox: itemCheckbox(task),
+});
+const ordered = (chars: number, markerLine: boolean): Layer => ({
+  kind: "list",
+  box: listBox({ ordered: true, chars, task: false }),
+  markerLine,
+  checkbox: itemCheckbox(false),
+});
 
 const same = (a: Len, b: Len) => expect(css(a)).toBe(css(b));
 
@@ -91,11 +102,13 @@ describe("composeInset — 一个循环,所有容器", () => {
     expect(insetVars(one)["--om-mark-w"]).toBe("5ch");
   });
 
-  it("task item: the checkbox box joins the content column, the marker box stays the marker's", () => {
+  it("task item: the checkbox is inside its list's box; the marker element is the box minus the checkbox", () => {
+    const box = listBox({ ordered: false, chars: 1, task: true });
     const i = composeInset([bullet(true, true)]);
-    same(i.content, add(markerBox(1), TASK_BOX));
-    same(i.marker!.width, markerBox(1));
-    // its child starts after the checkbox, at the task text
+    same(i.content, box);
+    same(i.marker!.width, sub(box, TASK_BOX));
+    expect(css(i.marker!.width)).toBe("0px"); // no bullet before the checkbox
+    // its child starts at the list's content column — the same one a plain sibling's child starts at
     same(composeInset([bullet(false, true), bullet(true)]).marker!.x, i.content);
   });
 
@@ -107,6 +120,16 @@ describe("composeInset — 一个循环,所有容器", () => {
 
   it("a line in no container composes to zero", () => {
     expect(insetVars(composeInset([]))).toEqual({ "--om-inset": "0px", "--om-fold-x": "-1.4em" });
+  });
+});
+
+describe("listBox — one marker box per list (design D1)", () => {
+  it("fits the widest marker plus one gap; a task-bearing list fits the checkbox too", () => {
+    expect(css(listBox({ ordered: false, chars: 1, task: false }))).toBe("2ch");
+    expect(css(listBox({ ordered: true, chars: 4, task: false }))).toBe("5ch");
+    // a bullet task's checkbox takes the bullet's place: the box is the checkbox's
+    same(listBox({ ordered: false, chars: 1, task: true }), TASK_BOX);
+    same(listBox({ ordered: true, chars: 2, task: true }), add(markerBox(2), TASK_BOX));
   });
 });
 

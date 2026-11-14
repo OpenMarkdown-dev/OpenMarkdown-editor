@@ -19,4 +19,12 @@ describe("imageBoxStyle", () => {
   it("larger than the picture is honoured (the column cap is the theme's)", () => {
     expect(imageBoxStyle({ width: 5000 })).toEqual({ width: zoomed("5000px") });
   });
+
+  it("width only plus a size remembered from an earlier load → the remembered ratio reserves the height (change: render-placeholder-size, D6)", () => {
+    // The demo picture: 1600×1107, written |480.
+    expect(imageBoxStyle({ width: 480 }, { width: 1600, height: 1107 })).toEqual({
+      width: zoomed("480px"),
+      aspectRatio: "1600 / 1107",
+    });
+  });
 });

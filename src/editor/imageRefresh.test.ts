@@ -20,7 +20,7 @@ describe("refreshImages (the image epoch)", () => {
 
   it("a table built at a new epoch is redrawn, so its images resolve again", () => {
     const src = "| a |\n| - |\n| ![](x.png) |";
-    expect(new TableWidget(src, 0, null, false, 0).eq(new TableWidget(src, 0, null, false, 0))).toBe(true);
-    expect(new TableWidget(src, 0, null, false, 1).eq(new TableWidget(src, 0, null, false, 0))).toBe(false);
+    expect(new TableWidget(src, 0, null, "loading", 0).eq(new TableWidget(src, 0, null, "loading", 0))).toBe(true);
+    expect(new TableWidget(src, 0, null, "loading", 1).eq(new TableWidget(src, 0, null, "loading", 0))).toBe(false);
   });
 });

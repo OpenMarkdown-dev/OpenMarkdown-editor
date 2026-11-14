@@ -444,3 +444,19 @@ describe("CELL_SYNC_USER_EVENT — one input session is one undo unit (F2)", () 
     expect(undoPresses(undefined)).toBe(1);
   });
 });
+
+describe("posAfterReflow — a caret in a cell keeps its cell through a re-align", () => {
+  it("keeps the cell and the offset; positions outside map as the change does", async () => {
+    const { posAfterReflow, reflowChangeIfNeeded } = await import("./tableEdit");
+    const text = "| one | two |\n| - | - |\n| the | 2 |";
+    const from = 10;
+    const reflow = reflowChangeIfNeeded(text, from)!;
+    expect(reflow).not.toBeNull();
+    const out = text.length - reflow.insert.length;
+    const inThe = from + text.indexOf("the") + 2; // th|e
+    const mapped = posAfterReflow(text, from, reflow, inThe);
+    expect(reflow.insert.slice(mapped - from - 2, mapped - from + 1)).toBe("the");
+    expect(posAfterReflow(text, from, reflow, 3)).toBe(3);
+    expect(posAfterReflow(text, from, reflow, from + text.length + 5)).toBe(from + text.length + 5 - out);
+  });
+});

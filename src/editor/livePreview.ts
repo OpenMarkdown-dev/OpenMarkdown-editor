@@ -20,9 +20,9 @@ import {
   LinkLabelWidget,
 } from "./widgets";
 import { codeBlockBody } from "./codeblockCopy";
-import { isMathReady, mathBody, mathReadyEffect, renderMath } from "./math";
-import { loadMathThenRedraw } from "./mathLoad";
+import { mathBody, mathReadyEffect, renderFormula } from "./math";
 import { attemptRender, failedSourceMark } from "./blocks/render";
+import { PendingWidget, reservedSize } from "./blocks/pending";
 import {
   DEFAULT_CHIP_THRESHOLD,
   expandedRefField,
@@ -38,11 +38,13 @@ import { nestedPreview } from "./blocks/nested";
 import { followLink } from "./linkNavigate";
 import { clickFollowsLink } from "./linkGesture";
 import { imageEpoch, imageEpochField } from "./imageRefresh";
-import { FORMATTING_MARKS, linkTextIsEmpty } from "./previewConceal";
+import { FORMATTING_MARKS, linkTextIsEmpty, listMarkStandIn } from "./previewConceal";
+import { isLink, linkMarkConcealable, referenceLabels, type ReferenceLabels, type SourceReader } from "./linkRefs";
 import { decorateInsets } from "./insets/decorate";
 import { coveredBySelection, withSelectedState } from "./selectionPaint";
 import { imageLabelOf } from "./imageAlt";
 import { calloutOf } from "./insets/stack";
+import { landingHiders, landingInside, type LandingShown } from "./caret";
 
 // The config facet now lives in `previewConfig.ts` so `widgets.ts` can read it
 // without an import cycle (livePreview → widgets already exists). Re-exported
@@ -50,6 +52,17 @@ import { calloutOf } from "./insets/stack";
 export { livePreviewConfig, type LivePreviewConfig } from "./previewConfig";
 
 const hide = Decoration.replace({});
+
+/**
+ * The visible stand-in of hidden source that holds the landing, where the mode
+ * does not reveal (Reading): the link text of a hidden URL, the widget standing
+ * for its source (spec: caret-rules / 落点看得见, outcome 3). Styled once in
+ * `theme.ts` with the selection fill.
+ */
+export const LANDING_CLASS = "om-landing";
+const landingMark = Decoration.mark({ class: LANDING_CLASS });
+/** A landing equal to a hidden range is in it too (`landingInside`, non-strict). */
+const WITHIN = { strict: false };
 
 /**
  * Provenance color for an `@agent` addressing token (change: agent-addressing).
@@ -62,18 +75,17 @@ const agentMark = Decoration.mark({ class: "om-agent" });
 interface BuildResult {
   decorations: DecorationSet;
   hidden: DecorationSet; // atomic ranges (replaced content)
+  /** A hide was skipped because the landing was inside it (live mode reveals). */
+  revealed: boolean;
 }
 
 class LivePreviewPluginValue {
   decorations: DecorationSet;
   hidden: DecorationSet;
-  /** Set during build() when a math node is seen before the Temml converter has
-   *  loaded — build() then kicks off the one-time lazy load (change:
-   *  code-highlight-and-math). */
-  private pendingMathLoad = false;
 
-  constructor(view: EditorView) {
-    const { decorations, hidden } = this.build(view);
+  /** No view: only `compute` is used (the landing verdict, `inlineLanding`). */
+  constructor(view?: EditorView) {
+    const { decorations, hidden } = view ? this.build(view) : { decorations: Decoration.none, hidden: Decoration.none };
     this.decorations = decorations;
     this.hidden = hidden;
   }
@@ -117,30 +129,58 @@ class LivePreviewPluginValue {
     // B (compute) sample for the keystroke probe — a single constant branch
     // when the probe is off (spec: 探针默认零常驻开销).
     const t0 = perfProbeEnabled ? performance.now() : 0;
-    const { state } = view;
+    const result = this.compute(view.state, view.visibleRanges);
+    if (perfProbeEnabled) recordBuildMs(performance.now() - t0);
+    return result;
+  }
+
+  /**
+   * The decorations for `state` over `ranges` — pure (no view), so the landing
+   * verdict reads the very decorations the plugin draws (`inlineLanding`).
+   */
+  compute(state: EditorState, ranges: readonly { from: number; to: number }[]): BuildResult {
     const config = state.facet(livePreviewConfig);
     const deco: Range<Decoration>[] = [];
     const hiddenRanges: Range<Decoration>[] = [];
-    this.pendingMathLoad = false;
+    let revealed = false;
 
     const touches = (from: number, to: number) => {
       if (!config.revealOnSelection) return false;
       return state.selection.ranges.some((r) => r.from <= to && r.to >= from);
     };
 
-    const conceal = (from: number, to: number, decoration: Decoration = hide) => {
+    // The one funnel every inline hide goes through. The landing is never
+    // hidden (spec: caret-rules / 落点看得见): where the mode reveals, the hide
+    // is skipped (outcome 1); where it does not (Reading), `standIn` — the
+    // visible thing standing for the hidden range, by default the replacing
+    // widget itself — is marked as the landing (outcome 3).
+    const conceal = (from: number, to: number, decoration: Decoration = hide, standIn?: { from: number; to: number }) => {
       if (from >= to) return;
+      if (landingInside(state, from, to, WITHIN)) {
+        // Reveal only for a landing strictly inside: one that merely equals the
+        // range (a drag edge-to-edge over a long URL) keeps the chip, marked.
+        if (config.revealOnSelection && landingInside(state, from, to)) {
+          revealed = true;
+          return;
+        }
+        const s = standIn ?? { from, to };
+        deco.push(landingMark.range(s.from, s.to));
+      }
       deco.push(decoration.range(from, to));
       if (decoration === hide || decoration.spec.widget) {
         hiddenRanges.push(hide.range(from, to));
       }
     };
 
-    for (const { from, to } of view.visibleRanges) {
+    // Which bracket pairs are links: the one predicate over the reference
+    // definitions the tree has reached (`linkRefs.ts`; memoised per tree).
+    const read: SourceReader = (a, b) => state.sliceDoc(a, b);
+    const links = { read, labels: referenceLabels(progressiveTree(state), read) };
+    for (const { from, to } of ranges) {
       progressiveTree(state).iterate({
         from,
         to,
-        enter: (node) => this.enterNode(node, state, config, touches, conceal, deco),
+        enter: (node) => this.enterNode(node, state, config, touches, conceal, deco, links),
       });
       this.decorateAgentTokens(state, from, to, deco);
       // Every container line's left inset — quote bars, list markers, code
@@ -150,19 +190,13 @@ class LivePreviewPluginValue {
       decorateInsets(state, from, to, deco);
     }
 
-    // A math node was seen before the converter loaded — trigger the one-time
-    // lazy load; its resolution dispatches mathReadyEffect to rebuild (both this
-    // plugin and the block-decoration field), swapping source→formula.
-    if (this.pendingMathLoad && !isMathReady()) loadMathThenRedraw(view);
-
     deco.sort((a, b) => a.from - b.from || a.value.startSide - b.value.startSide);
     hiddenRanges.sort((a, b) => a.from - b.from);
-    const result: BuildResult = {
+    return {
       decorations: Decoration.set(deco, true),
       hidden: Decoration.set(hiddenRanges, true),
+      revealed,
     };
-    if (perfProbeEnabled) recordBuildMs(performance.now() - t0);
-    return result;
   }
 
   enterNode(
@@ -170,10 +204,20 @@ class LivePreviewPluginValue {
     state: EditorState,
     config: LivePreviewConfig,
     touches: (from: number, to: number) => boolean,
-    conceal: (from: number, to: number, d?: Decoration) => void,
+    conceal: (from: number, to: number, d?: Decoration, standIn?: { from: number; to: number }) => void,
     deco: Range<Decoration>[],
+    links: { read: SourceReader; labels: ReferenceLabels },
   ): boolean | void {
     const name = node.name;
+
+    // --- link brackets: hidden only when the pair IS a link (spec:
+    // 方括号是否成链接只有一个判定) — `[!FOOBAR]` and an undefined `[foo]` keep theirs.
+    if (name === "LinkMark") {
+      const parent = node.node.parent;
+      if (!parent || touches(parent.from, parent.to)) return;
+      if (linkMarkConcealable(node.node, links.read, links.labels)) conceal(node.from, node.to);
+      return;
+    }
 
     // --- formatting marks: hide when the enclosing element is untouched ---
     if (FORMATTING_MARKS.has(name)) {
@@ -189,7 +233,7 @@ class LivePreviewPluginValue {
       ) {
         to += 1;
       }
-      conceal(node.from, to);
+      conceal(node.from, to, hide, parent);
       return;
     }
 
@@ -202,14 +246,18 @@ class LivePreviewPluginValue {
       case "InlineMath": {
         // Reveal source when touched (same contract as every other mark).
         if (touches(node.from, node.to)) return;
-        // Not loaded yet → kick off load (build() reads this) and leave the
-        // node as source, unmarked. Invalid TeX → source with the failure mark,
-        // through the one wrapper (change: block-fallback, design D3).
-        if (!isMathReady()) {
-          this.pendingMathLoad = true;
+        // Not loaded yet → the one placeholder, as wide as the source, one
+        // line tall (change: render-placeholder-size; the block-math entry's
+        // driver loads the converter). Load failed → source, unmarked. Invalid
+        // TeX → source with the failure mark, through the one wrapper (change:
+        // block-fallback, design D3).
+        const source = state.sliceDoc(node.from, node.to);
+        const out = attemptRender(() => renderFormula(mathBody(source), false));
+        if (out.kind === "pending") {
+          const widget = new PendingWidget("inline", node.from, reservedSize({}), undefined, source);
+          conceal(node.from, node.to, Decoration.replace({ widget }));
           return;
         }
-        const out = attemptRender(() => renderMath(mathBody(state.sliceDoc(node.from, node.to)), false));
         if (out.kind === "failed") deco.push(failedSourceMark(node.from, node.to, out.reason));
         if (out.kind !== "rendered") return;
         conceal(
@@ -220,16 +268,10 @@ class LivePreviewPluginValue {
         return;
       }
 
-      case "BlockMath": {
-        // Rendered by buildBlockDecorations (block widgets must come from a
-        // StateField, not this ViewPlugin). Here we only note that the converter
-        // needs loading so build() can trigger it.
-        if (!isMathReady()) this.pendingMathLoad = true;
-        return;
-      }
-
       case "Link": {
         const n = node.node;
+        // Not a link (no URL, no defined reference): text, shown as written.
+        if (!isLink(n, links.read, links.labels)) return;
         const url = childrenOf(n).find((c) => c.name === "URL");
         const revealed = touches(node.from, node.to);
         if (revealed) {
@@ -255,11 +297,12 @@ class LivePreviewPluginValue {
           return false;
         }
         // Hide `(url "title")` — everything from closing ] onward is
-        // LinkMark/URL/LinkTitle children; LinkMarks are handled above,
-        // URL + title here.
+        // LinkMark/URL/LinkTitle children; LinkMarks are handled above
+        // (`linkMarkConcealable`), URL + title here — and the `[r]` / `[]` of a
+        // reference link, so `[a][r]` reads `a` as the HTML render does.
         for (const child of childrenOf(n)) {
-          if (child.name === "URL" || child.name === "LinkTitle") {
-            conceal(child.from, child.to);
+          if (child.name === "URL" || child.name === "LinkTitle" || child.name === "LinkLabel") {
+            conceal(child.from, child.to, hide, node);
           }
         }
         deco.push(Decoration.mark({ class: "om-link" }).range(node.from, node.to));
@@ -371,18 +414,20 @@ class LivePreviewPluginValue {
       case "ListMark": {
         const item = node.node.parent; // ListItem
         if (!item) return;
-        const inOrdered = item.parent?.name === "OrderedList";
-        if (inOrdered) {
+        const standIn = listMarkStandIn(item);
+        if (standIn === null) {
           deco.push(Decoration.mark({ class: "om-list-mark" }).range(node.from, node.to));
           return;
         }
-        // Task items keep their bullet hidden-replaced too; reveal with line.
+        // Revealed with its line, like every mark: the source `- ` / `- [ ] ` shows.
         const line = state.doc.lineAt(node.from);
         if (touches(line.from, line.to)) {
           deco.push(Decoration.mark({ class: "om-list-mark" }).range(node.from, node.to));
           return;
         }
-        conceal(node.from, node.to, Decoration.replace({ widget: new BulletWidget() }));
+        // A task item's checkbox is its marker: the `-` is concealed with no
+        // widget, so the checkbox draws where the bullet was.
+        conceal(node.from, node.to, standIn ? Decoration.replace({ widget: new BulletWidget() }) : Decoration.replace({}));
         return;
       }
 
@@ -444,7 +489,7 @@ class LivePreviewPluginValue {
     url: SyntaxNode,
     state: EditorState,
     config: LivePreviewConfig,
-    conceal: (from: number, to: number, d?: Decoration) => void,
+    conceal: (from: number, to: number, d?: Decoration, standIn?: { from: number; to: number }) => void,
   ): void {
     const urlText = state.sliceDoc(url.from, url.to);
     const threshold = config.chipThreshold ?? DEFAULT_CHIP_THRESHOLD;
@@ -511,7 +556,52 @@ const inlinePreviewPlugin = ViewPlugin.fromClass(LivePreviewPluginValue, {
   },
 });
 
-const previewCore = [inlinePreviewPlugin, blockDecorationField, expandedRefField, imageEpochField];
+/**
+ * The inline preview's answer to "how is the landing shown" (spec: caret-rules /
+ * 落点看得见; `landingShownBy` in `caret.ts`), read off the decorations the
+ * plugin itself builds for the landing's lines — not off the funnel's decision,
+ * so a hide that skipped the funnel is caught too (gate: landing.gate.test.ts
+ * G2). A replacing decoration the landing is inside: `marked` when the landing
+ * mark covers it, else `hidden`. None: `revealed` when the funnel skipped one.
+ * Decorations flagged `landingExempt` (indent whitespace, `insets/decorate.ts`)
+ * are not hiding paths.
+ */
+export function inlineLanding(state: EditorState): LandingShown | null {
+  const sel = state.selection.main;
+  const range = { from: state.doc.lineAt(sel.from).from, to: state.doc.lineAt(sel.to).to };
+  const built = new LivePreviewPluginValue().compute(state, [range]);
+  return landingIn(state, built.decorations, range, built.revealed);
+}
+
+/**
+ * The verdict over a built decoration set (pure; `inlineLanding`): each hide
+ * holding the landing must be covered by a landing mark (its stand-in), else
+ * it is `hidden`.
+ */
+export function landingIn(
+  state: EditorState,
+  set: DecorationSet,
+  range: { from: number; to: number },
+  revealed: boolean,
+): LandingShown | null {
+  const marks: { from: number; to: number }[] = [];
+  const hides: { from: number; to: number }[] = [];
+  set.between(range.from, range.to, (from, to, d) => {
+    if (d.spec.class === LANDING_CLASS) marks.push({ from, to });
+    else if (d.point && from < to && !d.spec.landingExempt && landingInside(state, from, to, WITHIN)) hides.push({ from, to });
+  });
+  if (hides.length === 0) return revealed ? "revealed" : null;
+  const covered = (h: { from: number; to: number }) => marks.some((m) => m.from <= h.from && h.to <= m.to);
+  return hides.every(covered) ? "marked" : "hidden";
+}
+
+const previewCore = [
+  inlinePreviewPlugin,
+  blockDecorationField,
+  expandedRefField,
+  imageEpochField,
+  landingHiders.of(inlineLanding),
+];
 // Part editors nested in blocks render with the same preview, handed down via a
 // facet: they sit below this module (see `nestedPreview` in blocks/nested.ts).
 export const livePreview = [...previewCore, nestedPreview.of(previewCore)];

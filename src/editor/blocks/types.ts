@@ -1,7 +1,8 @@
-import type { EditorState, Extension, StateEffect } from "@codemirror/state";
+import type { EditorState, Extension, StateEffect, Transaction } from "@codemirror/state";
 import type { EditorView, WidgetType } from "@codemirror/view";
 import type { SyntaxNodeRef } from "@lezer/common";
 import type { LivePreviewConfig } from "../previewConfig";
+import type { Pending } from "./render";
 
 /**
  * The three ways a block may be edited (spec: block-editing / 三种编辑方式).
@@ -41,13 +42,21 @@ export interface BlockEntry {
   /** Source range for a matched node, or null to leave it as source. */
   range?: (state: EditorState, node: SyntaxNodeRef) => { from: number; to: number } | null;
   /**
-   * Rendered widget for a range. Three answers (change: block-fallback, design
-   * D1): the widget; `null` for "not now" (converter still loading, not a shape
-   * this entry draws) — the source stays, unmarked; or THROW for "cannot" — the
-   * framework (`attemptRender` in `render.ts`) leaves the source with the
-   * failure mark. Never catch your own render error.
+   * Rendered widget for a range. Four answers (change: block-fallback, design
+   * D1; render-placeholder-size, design D1): the widget; `pending(…)` for "mine,
+   * not yet" (converter still loading, result still queued, render deferred) —
+   * the framework shows the one placeholder (`pending.ts`), never the source;
+   * `null` for "not mine" (not a shape this entry draws) — the source stays,
+   * unmarked; or THROW for "cannot" — the framework (`attemptRender` in
+   * `render.ts`) leaves the source with the failure mark. Never catch your own
+   * render error, and never answer "not yet" with `null`.
    */
-  widget?: (state: EditorState, node: SyntaxNodeRef, range: { from: number; to: number }) => WidgetType | null;
+  widget?: (state: EditorState, node: SyntaxNodeRef, range: { from: number; to: number }) => WidgetType | Pending | null;
+  /**
+   * A: the placeholder's height when no size is known yet (a CSS length; design
+   * D3, step 3). Default: one text line.
+   */
+  pendingMinHeight?: string;
   /** Document-level entries that are not a syntax node (frontmatter). */
   scan?: (state: EditorState, config: LivePreviewConfig) => BlockCandidate | null;
   /**
@@ -58,9 +67,30 @@ export interface BlockEntry {
   /**
    * B only: enter the part that holds document offset `pos`, its caret at `pos`
    * (an undo landing inside the block — spec: caret-rules R2b). The outer caret
-   * stays at `pos`.
+   * stays at `pos`. With `head`: a selection inside that one part, selected the
+   * same in the part (R2c, a Find match when the body takes the keys back).
    */
-  enterAt?: (view: EditorView, block: BlockRange, pos: number) => void;
+  enterAt?: (view: EditorView, block: BlockRange, pos: number, head?: number) => void;
+  /**
+   * B only: the source range of the part (a cell, a property value) holding
+   * `pos`, or null between parts. R2c enters a selection only when both its
+   * ends lie in one part (spec: caret-rules / 光标不停在渲染块内部).
+   */
+  partAt?: (state: EditorState, block: BlockRange, pos: number) => { from: number; to: number } | null;
+  /**
+   * The block draws the landing (the main selection) inside itself — in the
+   * part that holds it — instead of being marked whole (spec: caret-rules /
+   * 落点看得见, outcome 2). Answers, for a landing inside `block`, whether this
+   * state's widget paints it; computed from the same marks the widget is built
+   * with. Absent, or false for this landing (nothing in the block paints it):
+   * the block field marks the whole widget (outcome 3).
+   */
+  paintsLanding?: (state: EditorState, block: BlockRange) => boolean;
+  /**
+   * Inputs of the widget's own beyond the document and the selection that
+   * should redraw it (the table: the Find query and panel, which it paints).
+   */
+  redrawOn?: (tr: Transaction) => boolean;
   /** B only: the effects that end this block's open part edit; [] when none is open. */
   leave?: (state: EditorState) => StateEffect<unknown>[];
   /**

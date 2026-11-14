@@ -1,5 +1,5 @@
 import { CALLOUT_TYPES } from "../callout";
-import { EDITOR_TOKENS, TYPE_SCALE, headingType, tokenDefault, tokenProperty, type EditorToken } from "../tokens";
+import { EDITOR_TOKENS, TABLE_CELL_BOX, TYPE_SCALE, headingType, tokenDefault, tokenProperty, type EditorToken } from "../tokens";
 
 /**
  * The stylesheet for the renderer's semantic HTML (spec: render-style; change:
@@ -113,7 +113,7 @@ function rules(): string[] {
   out.push(rule(`${D} .om-image-missing`, { color: v("muted-fg") }));
   out.push(rule(`${D} .om-table-wrap`, { overflowX: "auto", margin: "0 0 0.8em" }));
   out.push(rule(`${D} table`, { borderCollapse: "collapse" }));
-  out.push(rule(`${D} th, ${D} td`, { border: `1px solid ${v("border")}`, padding: "0.3em 0.75em", textAlign: "left" }));
+  out.push(rule(`${D} th, ${D} td`, { border: `1px solid ${v("border")}`, ...TABLE_CELL_BOX, textAlign: "left" }));
   out.push(rule(`${D} th`, { background: v("code-bg"), fontWeight: "700" }));
   out.push(rule(`${D} .om-align-center`, { textAlign: "center" }));
   out.push(rule(`${D} .om-align-right`, { textAlign: "right" }));

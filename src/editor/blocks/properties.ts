@@ -11,7 +11,7 @@ import { redo, undo } from "@codemirror/commands";
 import { editorString } from "../strings";
 import { historyKeyOf } from "../historyKey";
 import { editorIconButton, editorTextButton } from "../controls";
-import { finalizeValue, parseProps, type ParsedProps, type Prop } from "../frontmatterProps";
+import { newPropertyLine, parseProps, writeScalar, type ParsedProps, type Prop, type QuoteStyle } from "../frontmatterProps";
 import { frontmatterRange } from "../headingIndex";
 import { exitBlock } from "./exit";
 import { lineAfterBlock } from "./geometry";
@@ -42,29 +42,48 @@ export interface PropTarget {
   /** Where the caret lands on entry; "all" selects a freshly added name; a number is an offset (undo landing). */
   caret?: PartCaret;
 }
+/**
+ * How a name or value was written when its edit began (change: write-back-valid,
+ * design D2). Every keystroke writes through `writeScalar` in `style` — the
+ * quote style the part STARTED with, so a bare value that needs quotes mid-edit
+ * gets them and loses them again once the text is safe — and text equal to
+ * `text` writes back `written` exactly, so an edit that returns to where it
+ * started leaves the bytes as they were (spec: 删掉需要引号的字符后引号随之去掉).
+ */
+interface PartSeed {
+  text: string;
+  /** The written span, quotes included. */
+  written: string;
+  style: QuoteStyle;
+  /** A value that was absent with no space after the `:` (`empty:`). */
+  bare: boolean;
+}
+
 interface ActiveProp extends PropTarget {
   /** Doc changes this part did NOT make — re-seeds it (same model as tables). */
   epoch: number;
-  /**
-   * The value's written span (quotes included) when its edit began, so leaving a
-   * value that was not changed writes nothing (spec: editor-fidelity / 进出不改字节).
-   * Absent for a name, or when the row could not be read.
-   */
-  seed?: string;
+  /** The part as it was when its edit began; absent when the row could not be read. */
+  seed?: PartSeed;
 }
 
-/** A value's written span, quotes included — what `finalizeValue` replaces. */
-function valueSpan(prop: Prop): { from: number; to: number } {
-  return prop.quote ? { from: prop.valueFrom - 1, to: prop.valueTo + 1 } : { from: prop.valueFrom, to: prop.valueTo };
+/** A name's or value's written span, quotes included — what `partChange` replaces. */
+function spanOf(prop: Prop, part: "key" | "value"): { from: number; to: number } {
+  const [from, to, quote] = part === "key" ? [prop.keyFrom, prop.keyTo, prop.keyQuote] : [prop.valueFrom, prop.valueTo, prop.quote];
+  return quote ? { from: from - 1, to: to + 1 } : { from, to };
 }
 
-/** The written span of the value a target names, read in `doc`; undefined for a name. */
-function seedOf(doc: Text, target: PropTarget): string | undefined {
-  if (target.part !== "value") return undefined;
+/** The part a target names, as written in `doc` at the start of its edit. */
+function seedOf(doc: Text, target: PropTarget): PartSeed | undefined {
   const prop = parseProps(headText(doc))?.props[target.index];
-  if (!prop) return undefined;
-  const { from, to } = valueSpan(prop);
-  return doc.sliceString(from, to);
+  if (!prop || (target.part === "value" && !prop.editable)) return undefined;
+  const { from, to } = spanOf(prop, target.part);
+  const key = target.part === "key";
+  return {
+    text: key ? prop.key : prop.value,
+    written: doc.sliceString(from, to),
+    style: key ? prop.keyQuote : prop.quote,
+    bare: !key && prop.value === "" && doc.sliceString(from - 1, from) === ":",
+  };
 }
 
 export const setActiveProp = StateEffect.define<PropTarget | null>();
@@ -107,27 +126,6 @@ export const propsSourceField = StateField.define<boolean>({
   },
 });
 
-/**
- * When an edit of a VALUE ends, give it quotes if it now needs them (spec: 值需要
- * 引号时只给它加引号), riding the same transaction as the session change. Only
- * that value's bytes change.
- */
-const finalizeOnLeave = EditorState.transactionFilter.of((tr) => {
-  if (!tr.effects.some((e) => e.is(setActiveProp))) return tr;
-  const prev = tr.startState.field(activePropField, false);
-  if (!prev || prev.part !== "value" || tr.startState.readOnly) return tr;
-  const prop = parsePropsOf(tr.startState)?.props[prev.index];
-  if (!prop || !prop.editable) return tr;
-  const { from, to } = valueSpan(prop);
-  const written = tr.startState.sliceDoc(from, to);
-  // A value left exactly as it was written is the author's, not ours to re-quote
-  // (`plain: -dash` is valid YAML the quoting rule would still wrap).
-  if (written === prev.seed) return tr;
-  const want = finalizeValue(prop.value, prop.quote);
-  if (written === want) return tr;
-  return [tr, { changes: { from, to, insert: want }, userEvent: "input" }];
-});
-
 const exitOnOutsideClick = EditorView.domEventHandlers({
   mousedown(e, view) {
     if (!view.state.field(activePropField, false)) return false;
@@ -161,32 +159,44 @@ const propsCaret = EditorState.transactionFilter.of((tr) => {
   return [tr, { selection: { anchor: lineAfterBlock(tr.newDoc, p.to) }, sequential: true }];
 });
 
-export const propertiesState: Extension = [activePropField, propsSourceField, finalizeOnLeave, propsCaret, exitOnOutsideClick];
+export const propertiesState: Extension = [activePropField, propsSourceField, propsCaret, exitOnOutsideClick];
 
 // --- writing ----------------------------------------------------------------
 
-/** The change that writes `text` as property `index`'s name or value, or null. */
-function partChange(state: EditorState, index: number, part: "key" | "value", text: string) {
+/**
+ * The change that writes `text` as property `index`'s name or value, or null
+ * when the file already says it. Called by the part editor on EVERY keystroke
+ * with the whole text typed so far: the part's whole written span (quotes
+ * included) becomes `writeScalar(text, part, style it started with)`, so the
+ * frontmatter is valid YAML after every write and reads back as exactly `text`
+ * (spec: Properties 块 「写回始终是合法的 YAML」). The text is the user's — nothing
+ * typed is replaced by something else. An empty name is not written.
+ */
+export function partChange(state: EditorState, index: number, part: "key" | "value", text: string) {
   const prop = parsePropsOf(state)?.props[index];
-  if (!prop) return null;
-  if (part === "key") {
-    // A name cannot hold `: ` or start / end with a space — the line would stop
-    // being `name:` and the whole block would fall back to source mid-typing.
-    const key = text.replace(/:(\s|$)/g, "-$1").trim();
-    if (key === "" || key === prop.key) return null;
-    return { from: prop.keyFrom, to: prop.keyTo, insert: key };
+  if (!prop || (part === "value" && !prop.editable)) return null;
+  if (part === "key" && text === "") return null;
+  const active = state.field(activePropField, false);
+  const seed = active && active.index === index && active.part === part ? active.seed : undefined;
+  const style = seed ? seed.style : part === "key" ? prop.keyQuote : prop.quote;
+  const written = seed && text === seed.text ? seed.written : writeScalar(text, part, style);
+  let { from, to } = spanOf(prop, part);
+  let insert = written;
+  if (part === "value") {
+    const before = state.sliceDoc(from - 1, from);
+    // `name:` with nothing after: write the separating space too — and take it
+    // away again when the value returns to the absent value it started as.
+    if (before === ":") insert = written === "" ? "" : ` ${written}`;
+    else if (written === "" && seed?.bare && before === " " && state.sliceDoc(from - 2, from - 1) === ":") from -= 1;
   }
-  if (text === prop.value) return null;
-  // `name:` with nothing after: write the separating space too.
-  const bare = prop.value === "" && state.sliceDoc(prop.valueFrom - 1, prop.valueFrom) === ":";
-  return { from: prop.valueFrom, to: prop.valueTo, insert: bare ? ` ${text}` : text };
+  if (state.sliceDoc(from, to) === insert) return null;
+  return { from, to, insert };
 }
 
 /** Append a property row to parsed frontmatter `p`, its new name selected in the open key editor. */
 export function addProperty(view: EditorView, p: ParsedProps) {
-  const name = editorString("props.newName");
   view.dispatch({
-    changes: { from: p.closeFrom, insert: `${name}: \n` },
+    changes: { from: p.closeFrom, insert: newPropertyLine(editorString("props.newName")) },
     effects: setActiveProp.of({ index: p.props.length, part: "key", caret: "all" }),
     userEvent: "input",
   });
@@ -432,21 +442,31 @@ export const frontmatterEntry: BlockEntry = {
   },
   // An undo landed in the block (spec: caret-rules R2b): edit the name or value
   // holding `pos`, its caret at the change; the outer caret stays at `pos`.
-  enterAt: (view, _block, pos) => {
+  // With `head`: a selection inside that one name or value (R2c), selected the same.
+  enterAt: (view, _block, pos, head = pos) => {
     const p = parsePropsOf(view.state);
     const target = p ? propAt(p, pos) : null;
     if (!target) return;
     const prop = p!.props[target.index];
     const from = target.part === "key" ? prop.keyFrom : prop.valueFrom;
     const to = target.part === "key" ? prop.keyTo : prop.valueTo;
-    const caret = Math.max(0, Math.min(pos, to) - from);
+    const rel = (n: number) => Math.max(0, Math.min(n, to) - from);
+    const caret: PartCaret = head === pos ? rel(pos) : { anchor: rel(pos), head: rel(head) };
     const open = view.state.field(activePropField, false);
     if (open && open.index === target.index && open.part === target.part) {
       const wrap = view.contentDOM.querySelector<HTMLElement>(".om-props");
       const editor = wrap ? partEditorIn(wrap) : undefined;
       if (editor) return placePartCaret(editor, caret);
     }
-    view.dispatch({ effects: setActiveProp.of({ ...target, caret }), selection: { anchor: pos } });
+    view.dispatch({ effects: setActiveProp.of({ ...target, caret }), selection: { anchor: pos, head } });
+  },
+  partAt: (state, _block, pos) => {
+    const p = parsePropsOf(state);
+    const target = p ? propAt(p, pos) : null;
+    if (!target) return null;
+    const prop = p!.props[target.index];
+    const [from, to] = target.part === "key" ? [prop.keyFrom, prop.keyTo] : [prop.valueFrom, prop.valueTo];
+    return from <= pos && pos <= to ? { from, to } : null;
   },
   leave: (state) => (state.field(activePropField, false) ? [setActiveProp.of(null)] : []),
 };

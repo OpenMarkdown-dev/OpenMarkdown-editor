@@ -1,0 +1,1121 @@
+{
+  "note": "Arbitration source for the ONE heading model — TS (src/editor/headingIndex.ts + sectionOps.ts) and Rust (src-tauri/src/section.rs); both test suites assert every entry (spec: section-write / 一个标题模型、frontmatter 只有一条规则; change: heading-model). Each fixture is decoded by the side's own disk decoder first (BOM stripped, \\r\\n→\\n). hash = FNV-1a 64 over UTF-8 bytes of the exact section slice (heading line through section end), lowercase hex, 16 digits. fromLine/toLine are 1-based and inclusive. Headings: document-level ATX lines (≤3 leading spaces) outside fences and frontmatter; `#` lines in quotes or list items are not headings. Frontmatter (`frontmatter`, when present: 1-based closing line, or null): line 1 `---` (+ spaces/tabs), line 2 a closing fence, a YAML comment or a `key:` line, and a closing `---` fence below; unclosed is not frontmatter. outline[].anchor = the plainest of: the path, the path with each segment escaped, the path + #k, the escaped path + #k, that resolves back to exactly that heading (round-trip invariant, asserted by both sides over every case); null for a heading with no text. Escapes inside a segment: \\\\ → \\, \\# → #, \\: → : (a heading's own `::` is written \\::); any other backslash is itself; an unescaped `::` separates segments; empty segments at either end are dropped, interior ones kept. Resolution (change: heading-anchors): a trailing unescaped #<digits> after a non-blank base is an ordinal only when the base matches MORE THAN ONE heading (k out of range → NOT_FOUND); otherwise the whole query is matched as written; matching is exact → case-insensitive suffix of the `::` path, no prefix fallback; anchors[].path is the anchor of the hit; ambiguity lists candidate anchors. Ops pin the separator rule: one blank line towards existing content on each side of an inserted block; replace keeps the heading line.",
+  "cases": [
+    {
+      "file": "basic.md",
+      "fileHash": "7fec575ec5661f58",
+      "outline": [
+        {
+          "path": "会议记录",
+          "level": 1,
+          "fromLine": 1,
+          "toLine": 16,
+          "hash": "704893c55436720e",
+          "anchor": "会议记录"
+        },
+        {
+          "path": "会议记录::行动项",
+          "level": 2,
+          "fromLine": 5,
+          "toLine": 8,
+          "hash": "87588ec3f69132cb",
+          "anchor": "会议记录::行动项"
+        },
+        {
+          "path": "会议记录::记录",
+          "level": 2,
+          "fromLine": 9,
+          "toLine": 16,
+          "hash": "afab6b2e1804b20c",
+          "anchor": "会议记录::记录"
+        },
+        {
+          "path": "会议记录::记录::记录明细",
+          "level": 3,
+          "fromLine": 13,
+          "toLine": 16,
+          "hash": "cb910031a1eac60e",
+          "anchor": "会议记录::记录::记录明细"
+        },
+        {
+          "path": "7月",
+          "level": 1,
+          "fromLine": 17,
+          "toLine": 27,
+          "hash": "d41de4d75c167753",
+          "anchor": "7月"
+        },
+        {
+          "path": "7月::记录",
+          "level": 2,
+          "fromLine": 21,
+          "toLine": 24,
+          "hash": "bd1ff783998bc1ed",
+          "anchor": "7月::记录"
+        },
+        {
+          "path": "7月::Plan B",
+          "level": 2,
+          "fromLine": 25,
+          "toLine": 27,
+          "hash": "385681dc95af49f1",
+          "anchor": "7月::Plan B"
+        }
+      ],
+      "anchors": [
+        {
+          "query": "行动项",
+          "path": "会议记录::行动项"
+        },
+        {
+          "query": "记录",
+          "error": "AMBIGUOUS_HEADING",
+          "candidates": [
+            "会议记录::记录",
+            "7月::记录"
+          ]
+        },
+        {
+          "query": "7月::记录",
+          "path": "7月::记录"
+        },
+        {
+          "query": "会议记录::记录",
+          "path": "会议记录::记录"
+        },
+        {
+          "query": "记录::记录明细",
+          "path": "会议记录::记录::记录明细"
+        },
+        {
+          "query": "plan b",
+          "path": "7月::Plan B"
+        },
+        {
+          "query": "Plan",
+          "error": "NOT_FOUND"
+        }
+      ],
+      "ops": [
+        {
+          "op": "append",
+          "heading": "行动项",
+          "content": "- [ ] 新增任务",
+          "expected": "expected/basic.append-list.md",
+          "newBaseHash": "dfdf0027e0348837"
+        },
+        {
+          "op": "prepend",
+          "heading": "7月::记录",
+          "content": "> 摘要:七月记录已核对。",
+          "expected": "expected/basic.prepend-quote.md",
+          "newBaseHash": "35d772e2835d5b31"
+        },
+        {
+          "op": "replace",
+          "heading": "会议记录::记录",
+          "content": "改写后的记录正文。",
+          "baseHash": "afab6b2e1804b20c",
+          "expected": "expected/basic.replace-subtree.md",
+          "newBaseHash": "4c950061f13d1caa"
+        },
+        {
+          "op": "replace",
+          "heading": "记录",
+          "content": "x",
+          "baseHash": "0000000000000000",
+          "error": "AMBIGUOUS_HEADING"
+        },
+        {
+          "op": "replace",
+          "heading": "行动项",
+          "content": "x",
+          "baseHash": "0000000000000000",
+          "error": "CONFLICT"
+        },
+        {
+          "op": "replace",
+          "heading": "行动项",
+          "content": "x",
+          "error": "INVALID_ARGS"
+        },
+        {
+          "op": "append",
+          "heading": "Plan",
+          "content": "x",
+          "error": "NOT_FOUND"
+        }
+      ]
+    },
+    {
+      "file": "fences.md",
+      "fileHash": "ea7d45bdbaad4307",
+      "outline": [
+        {
+          "path": "真标题",
+          "level": 1,
+          "fromLine": 1,
+          "toLine": 26,
+          "hash": "ea7d45bdbaad4307",
+          "anchor": "真标题"
+        },
+        {
+          "path": "真标题::子节",
+          "level": 2,
+          "fromLine": 10,
+          "toLine": 19,
+          "hash": "881bcce7dfec270e",
+          "anchor": "真标题::子节"
+        },
+        {
+          "path": "真标题::收尾",
+          "level": 2,
+          "fromLine": 20,
+          "toLine": 26,
+          "hash": "5b57f54696aa5463",
+          "anchor": "真标题::收尾"
+        }
+      ],
+      "anchors": [
+        {
+          "query": "子节",
+          "path": "真标题::子节"
+        },
+        {
+          "query": "fence 里的假标题",
+          "error": "NOT_FOUND"
+        }
+      ],
+      "ops": [
+        {
+          "op": "append",
+          "heading": "子节",
+          "content": "子节补充。",
+          "expected": "expected/fences.append-subsection.md",
+          "newBaseHash": "734f9ccedc9b96d6"
+        }
+      ]
+    },
+    {
+      "file": "frontmatter.md",
+      "fileHash": "34a84d549bab1135",
+      "outline": [
+        {
+          "path": "正文标题",
+          "level": 1,
+          "fromLine": 8,
+          "toLine": 10,
+          "hash": "6907cbea9b93577d",
+          "anchor": "正文标题"
+        }
+      ],
+      "anchors": [
+        {
+          "query": "正文标题",
+          "path": "正文标题"
+        },
+        {
+          "query": "这行是 YAML 注释不是标题",
+          "error": "NOT_FOUND"
+        }
+      ],
+      "ops": [
+        {
+          "op": "prepend",
+          "content": "置顶的新段落。",
+          "expected": "expected/frontmatter.prepend-doc.md",
+          "newBaseHash": "d30913737036f2ab"
+        },
+        {
+          "op": "replace",
+          "content": "x",
+          "error": "INVALID_ARGS"
+        }
+      ]
+    },
+    {
+      "file": "no-heading.md",
+      "fileHash": "055c22d2b5f69668",
+      "outline": [],
+      "anchors": [],
+      "ops": [
+        {
+          "op": "append",
+          "content": "追加的一行。",
+          "expected": "expected/no-heading.append-doc.md",
+          "newBaseHash": "c38e89f327b07ab4"
+        }
+      ]
+    },
+    {
+      "file": "no-trailing-newline.md",
+      "fileHash": "74f421739fb0934e",
+      "outline": [
+        {
+          "path": "唯一标题",
+          "level": 1,
+          "fromLine": 1,
+          "toLine": 3,
+          "hash": "74f421739fb0934e",
+          "anchor": "唯一标题"
+        }
+      ],
+      "anchors": [],
+      "ops": [
+        {
+          "op": "append",
+          "content": "尾部追加。",
+          "expected": "expected/no-trailing-newline.append-doc.md",
+          "newBaseHash": "2591175354aa0fcf"
+        },
+        {
+          "op": "replace",
+          "heading": "唯一标题",
+          "content": "替换后的正文。",
+          "baseHash": "74f421739fb0934e",
+          "expected": "expected/no-trailing-newline.replace.md",
+          "newBaseHash": "d2d93f706d8b7499"
+        }
+      ]
+    },
+    {
+      "file": "fm-hr-top.md",
+      "fileHash": "04aee1fd028380fc",
+      "frontmatter": null,
+      "outline": [
+        {
+          "path": "甲",
+          "anchor": "甲",
+          "level": 1,
+          "fromLine": 5,
+          "toLine": 10,
+          "hash": "37749164f9437e02"
+        },
+        {
+          "path": "乙",
+          "anchor": "乙",
+          "level": 1,
+          "fromLine": 11,
+          "toLine": 13,
+          "hash": "4566dead94630fab"
+        }
+      ],
+      "anchors": [
+        {
+          "query": "甲",
+          "path": "甲"
+        },
+        {
+          "query": "乙",
+          "path": "乙"
+        }
+      ],
+      "ops": [
+        {
+          "op": "prepend",
+          "content": "置顶。",
+          "expected": "expected/fm-hr-top.prepend-doc.md",
+          "newBaseHash": "cbcb0cdb2854ca27"
+        }
+      ]
+    },
+    {
+      "file": "fm-trailing-space.md",
+      "fileHash": "6bfa1ac7380256b8",
+      "frontmatter": {
+        "closeLine": 3
+      },
+      "outline": [
+        {
+          "path": "正文",
+          "anchor": "正文",
+          "level": 1,
+          "fromLine": 5,
+          "toLine": 7,
+          "hash": "324410f965bb68be"
+        }
+      ],
+      "anchors": [
+        {
+          "query": "正文",
+          "path": "正文"
+        }
+      ],
+      "ops": []
+    },
+    {
+      "file": "fm-unclosed.md",
+      "fileHash": "5f7077c14fe824f6",
+      "frontmatter": null,
+      "outline": [
+        {
+          "path": "标题照样是标题",
+          "anchor": "标题照样是标题",
+          "level": 1,
+          "fromLine": 3,
+          "toLine": 5,
+          "hash": "e6f4cc46c89a6dd9"
+        }
+      ],
+      "anchors": [
+        {
+          "query": "标题照样是标题",
+          "path": "标题照样是标题"
+        },
+        {
+          "query": "title: 未闭合",
+          "error": "NOT_FOUND"
+        }
+      ],
+      "ops": []
+    },
+    {
+      "file": "fm-bom.md",
+      "fileHash": "be13653757b2836a",
+      "frontmatter": {
+        "closeLine": 3
+      },
+      "outline": [
+        {
+          "path": "首个标题",
+          "anchor": "首个标题",
+          "level": 1,
+          "fromLine": 4,
+          "toLine": 6,
+          "hash": "55020062dc5babb9"
+        }
+      ],
+      "anchors": [
+        {
+          "query": "首个标题",
+          "path": "首个标题"
+        }
+      ],
+      "ops": [
+        {
+          "op": "prepend",
+          "content": "置顶。",
+          "expected": "expected/fm-bom.prepend-doc.md",
+          "newBaseHash": "faed01fec99fed91"
+        }
+      ]
+    },
+    {
+      "file": "fm-comment.md",
+      "fileHash": "d36884cf6f44521e",
+      "frontmatter": {
+        "closeLine": 4
+      },
+      "outline": [
+        {
+          "path": "真标题",
+          "anchor": "真标题",
+          "level": 1,
+          "fromLine": 6,
+          "toLine": 8,
+          "hash": "dc8e8a2a88eddebe"
+        }
+      ],
+      "anchors": [
+        {
+          "query": "真标题",
+          "path": "真标题"
+        },
+        {
+          "query": "作者填写",
+          "error": "NOT_FOUND"
+        }
+      ],
+      "ops": []
+    },
+    {
+      "file": "containers.md",
+      "fileHash": "c25e81c3a2be1dcb",
+      "frontmatter": null,
+      "outline": [
+        {
+          "path": "容器",
+          "anchor": "容器",
+          "level": 1,
+          "fromLine": 1,
+          "toLine": 11,
+          "hash": "c25e81c3a2be1dcb"
+        },
+        {
+          "path": "容器::真子节",
+          "anchor": "容器::真子节",
+          "level": 2,
+          "fromLine": 9,
+          "toLine": 11,
+          "hash": "f18bd6ec3a264951"
+        }
+      ],
+      "anchors": [
+        {
+          "query": "引用里的标题",
+          "error": "NOT_FOUND"
+        },
+        {
+          "query": "列表里的标题",
+          "error": "NOT_FOUND"
+        },
+        {
+          "query": "真子节",
+          "path": "容器::真子节"
+        }
+      ],
+      "ops": []
+    },
+    {
+      "file": "duplicates.md",
+      "fileHash": "5eaaf3df3dce78c4",
+      "frontmatter": null,
+      "outline": [
+        {
+          "path": "周报",
+          "anchor": "周报#1",
+          "level": 1,
+          "fromLine": 1,
+          "toLine": 10,
+          "hash": "9b592576c937d047"
+        },
+        {
+          "path": "周报::记录",
+          "anchor": "周报::记录#1",
+          "level": 2,
+          "fromLine": 3,
+          "toLine": 6,
+          "hash": "eeaa75df1cabc2d8"
+        },
+        {
+          "path": "周报::记录",
+          "anchor": "周报::记录#2",
+          "level": 2,
+          "fromLine": 7,
+          "toLine": 10,
+          "hash": "8a3ce1133eaad0fe"
+        },
+        {
+          "path": "周报",
+          "anchor": "周报#2",
+          "level": 1,
+          "fromLine": 11,
+          "toLine": 16,
+          "hash": "1594a286dde42089"
+        },
+        {
+          "path": "周报::记录",
+          "anchor": "周报::记录#3",
+          "level": 2,
+          "fromLine": 13,
+          "toLine": 16,
+          "hash": "b7421805cece0a93"
+        },
+        {
+          "path": "A",
+          "anchor": "A#1",
+          "level": 1,
+          "fromLine": 17,
+          "toLine": 20,
+          "hash": "05050700b69dcd41"
+        },
+        {
+          "path": "A::B",
+          "anchor": "A::B#1",
+          "level": 2,
+          "fromLine": 19,
+          "toLine": 20,
+          "hash": "66e44d493b4f6aa1"
+        },
+        {
+          "path": "X",
+          "anchor": "X",
+          "level": 1,
+          "fromLine": 21,
+          "toLine": 25,
+          "hash": "be9ad1b2236d4df2"
+        },
+        {
+          "path": "X::A",
+          "anchor": "X::A",
+          "level": 2,
+          "fromLine": 23,
+          "toLine": 25,
+          "hash": "fd4513bb192e9131"
+        },
+        {
+          "path": "X::A::B",
+          "anchor": "X::A::B",
+          "level": 3,
+          "fromLine": 25,
+          "toLine": 25,
+          "hash": "b5edbf32067f61e4"
+        }
+      ],
+      "anchors": [
+        {
+          "query": "记录",
+          "error": "AMBIGUOUS_HEADING",
+          "candidates": [
+            "周报::记录#1",
+            "周报::记录#2",
+            "周报::记录#3"
+          ]
+        },
+        {
+          "query": "记录#2",
+          "path": "周报::记录#2"
+        },
+        {
+          "query": "周报::记录#3",
+          "path": "周报::记录#3"
+        },
+        {
+          "query": "周报",
+          "error": "AMBIGUOUS_HEADING",
+          "candidates": [
+            "周报#1",
+            "周报#2"
+          ]
+        },
+        {
+          "query": "周报#2",
+          "path": "周报#2"
+        },
+        {
+          "query": "记录#4",
+          "error": "NOT_FOUND"
+        },
+        {
+          "query": "A",
+          "error": "AMBIGUOUS_HEADING",
+          "candidates": [
+            "A#1",
+            "X::A"
+          ]
+        },
+        {
+          "query": "A#1",
+          "path": "A#1"
+        },
+        {
+          "query": "X::A",
+          "path": "X::A"
+        },
+        {
+          "query": "A::B",
+          "error": "AMBIGUOUS_HEADING",
+          "candidates": [
+            "A::B#1",
+            "X::A::B"
+          ]
+        },
+        {
+          "query": "A::B#2",
+          "path": "X::A::B"
+        },
+        {
+          "query": "x::a::b",
+          "path": "X::A::B"
+        }
+      ],
+      "ops": [
+        {
+          "op": "append",
+          "heading": "记录#2",
+          "content": "补一条。",
+          "expected": "expected/duplicates.append-ordinal.md",
+          "newBaseHash": "837c44bd7281068f"
+        },
+        {
+          "op": "append",
+          "heading": "记录",
+          "content": "x",
+          "error": "AMBIGUOUS_HEADING"
+        }
+      ]
+    },
+    {
+      "file": "anchor-collide.md",
+      "fileHash": "d025e718fa7586c4",
+      "frontmatter": null,
+      "outline": [
+        {
+          "path": "周报",
+          "anchor": "周报",
+          "level": 1,
+          "fromLine": 1,
+          "toLine": 13,
+          "hash": "d025e718fa7586c4"
+        },
+        {
+          "path": "周报::记录",
+          "anchor": "周报::记录#1",
+          "level": 2,
+          "fromLine": 3,
+          "toLine": 6,
+          "hash": "4b538c621503935f"
+        },
+        {
+          "path": "周报::记录",
+          "anchor": "周报::记录#2",
+          "level": 2,
+          "fromLine": 7,
+          "toLine": 10,
+          "hash": "7eb7cb64f938cb3d"
+        },
+        {
+          "path": "周报::记录#2",
+          "anchor": "周报::记录\\#2",
+          "level": 2,
+          "fromLine": 11,
+          "toLine": 13,
+          "hash": "fa7032a0d73e6184"
+        }
+      ],
+      "anchors": [
+        {
+          "query": "记录",
+          "error": "AMBIGUOUS_HEADING",
+          "candidates": [
+            "周报::记录#1",
+            "周报::记录#2"
+          ]
+        },
+        {
+          "query": "记录#1",
+          "path": "周报::记录#1"
+        },
+        {
+          "query": "记录#2",
+          "path": "周报::记录#2"
+        },
+        {
+          "query": "周报::记录#2",
+          "path": "周报::记录#2"
+        },
+        {
+          "query": "记录\\#2",
+          "path": "周报::记录\\#2"
+        },
+        {
+          "query": "周报::记录\\#2",
+          "path": "周报::记录\\#2"
+        },
+        {
+          "query": "记录#3",
+          "error": "NOT_FOUND"
+        }
+      ],
+      "ops": [
+        {
+          "op": "append",
+          "heading": "周报::记录#2",
+          "content": "追加到第二个「记录」。",
+          "expected": "expected/anchor-collide.append-ordinal.md",
+          "newBaseHash": "01946e896843e457"
+        },
+        {
+          "op": "append",
+          "heading": "周报::记录\\#2",
+          "content": "追加到「记录#2」这一节。",
+          "expected": "expected/anchor-collide.append-literal.md",
+          "newBaseHash": "5952842c1f7a0c24"
+        }
+      ]
+    },
+    {
+      "file": "anchor-escapes.md",
+      "fileHash": "fa110c52702c0b59",
+      "frontmatter": null,
+      "outline": [
+        {
+          "path": "C:\\Users",
+          "anchor": "C:\\Users",
+          "level": 1,
+          "fromLine": 1,
+          "toLine": 4,
+          "hash": "e1f9404feec60319"
+        },
+        {
+          "path": "末尾\\",
+          "anchor": "末尾\\",
+          "level": 1,
+          "fromLine": 5,
+          "toLine": 10,
+          "hash": "06897e593a3261cf"
+        },
+        {
+          "path": "末尾\\::子节",
+          "anchor": "末尾\\\\::子节",
+          "level": 2,
+          "fromLine": 7,
+          "toLine": 10,
+          "hash": "5f48cc414add3edc"
+        },
+        {
+          "path": "a::b",
+          "anchor": "a\\::b",
+          "level": 1,
+          "fromLine": 11,
+          "toLine": 16,
+          "hash": "4f78422a7f32d7ac"
+        },
+        {
+          "path": "a::b::子节",
+          "anchor": "a\\::b::子节",
+          "level": 2,
+          "fromLine": 15,
+          "toLine": 16,
+          "hash": "86f46a70e0e22943"
+        },
+        {
+          "path": "#3",
+          "anchor": "#3",
+          "level": 1,
+          "fromLine": 17,
+          "toLine": 20,
+          "hash": "95501a5c0047d545"
+        },
+        {
+          "path": "冒号:",
+          "anchor": "冒号:",
+          "level": 1,
+          "fromLine": 21,
+          "toLine": 24,
+          "hash": "d9ead81815f52cae"
+        },
+        {
+          "path": "冒号::::开头",
+          "anchor": "冒号\\:::\\:开头",
+          "level": 2,
+          "fromLine": 23,
+          "toLine": 24,
+          "hash": "23653d0f51eb0b47"
+        },
+        {
+          "path": "C# 入门",
+          "anchor": "C# 入门",
+          "level": 1,
+          "fromLine": 25,
+          "toLine": 28,
+          "hash": "1760160367856ea1"
+        },
+        {
+          "path": "Notes",
+          "anchor": "Notes",
+          "level": 1,
+          "fromLine": 29,
+          "toLine": 37,
+          "hash": "1ac4f0a029bad873"
+        },
+        {
+          "path": "Notes::Todo",
+          "anchor": "Notes::Todo",
+          "level": 2,
+          "fromLine": 31,
+          "toLine": 34,
+          "hash": "b34ccf1026659d04"
+        },
+        {
+          "path": "Notes::todo",
+          "anchor": "Notes::todo",
+          "level": 2,
+          "fromLine": 35,
+          "toLine": 37,
+          "hash": "1ee7ffd22e7abfd2"
+        }
+      ],
+      "anchors": [
+        {
+          "query": "C:\\Users",
+          "path": "C:\\Users"
+        },
+        {
+          "query": "c:\\users",
+          "path": "C:\\Users"
+        },
+        {
+          "query": "末尾\\",
+          "path": "末尾\\"
+        },
+        {
+          "query": "末尾\\\\::子节",
+          "path": "末尾\\\\::子节"
+        },
+        {
+          "query": "末尾\\::子节",
+          "error": "NOT_FOUND"
+        },
+        {
+          "query": "子节",
+          "error": "AMBIGUOUS_HEADING",
+          "candidates": [
+            "末尾\\\\::子节",
+            "a\\::b::子节"
+          ]
+        },
+        {
+          "query": "a\\::b",
+          "path": "a\\::b"
+        },
+        {
+          "query": "a::b",
+          "error": "NOT_FOUND"
+        },
+        {
+          "query": "b::子节",
+          "error": "NOT_FOUND"
+        },
+        {
+          "query": "a\\::b::子节",
+          "path": "a\\::b::子节"
+        },
+        {
+          "query": "#3",
+          "path": "#3"
+        },
+        {
+          "query": "\\#3",
+          "path": "#3"
+        },
+        {
+          "query": "冒号:",
+          "path": "冒号:"
+        },
+        {
+          "query": "冒号\\:::\\:开头",
+          "path": "冒号\\:::\\:开头"
+        },
+        {
+          "query": ":开头",
+          "path": "冒号\\:::\\:开头"
+        },
+        {
+          "query": "C# 入门",
+          "path": "C# 入门"
+        },
+        {
+          "query": "Todo",
+          "path": "Notes::Todo"
+        },
+        {
+          "query": "todo",
+          "path": "Notes::todo"
+        },
+        {
+          "query": "TODO",
+          "error": "AMBIGUOUS_HEADING",
+          "candidates": [
+            "Notes::Todo",
+            "Notes::todo"
+          ]
+        }
+      ],
+      "ops": [
+        {
+          "op": "append",
+          "heading": "a\\::b",
+          "content": "写进「a::b」。",
+          "expected": "expected/anchor-escapes.append-colons.md",
+          "newBaseHash": "756c9f9095186b43"
+        },
+        {
+          "op": "append",
+          "heading": "a::b",
+          "content": "x",
+          "error": "NOT_FOUND"
+        }
+      ]
+    },
+    {
+      "file": "anchor-nested.md",
+      "fileHash": "a9a44e20526b0565",
+      "frontmatter": null,
+      "outline": [
+        {
+          "path": "日志",
+          "anchor": "日志",
+          "level": 1,
+          "fromLine": 1,
+          "toLine": 21,
+          "hash": "a9a44e20526b0565"
+        },
+        {
+          "path": "日志::周一",
+          "anchor": "日志::周一#1",
+          "level": 2,
+          "fromLine": 3,
+          "toLine": 12,
+          "hash": "552adcff1aa69206"
+        },
+        {
+          "path": "日志::周一::记录",
+          "anchor": "日志::周一::记录#1",
+          "level": 3,
+          "fromLine": 5,
+          "toLine": 8,
+          "hash": "d69a6908e38b2f2a"
+        },
+        {
+          "path": "日志::周一::记录",
+          "anchor": "日志::周一::记录#2",
+          "level": 3,
+          "fromLine": 9,
+          "toLine": 12,
+          "hash": "3e65e4eba08db9c5"
+        },
+        {
+          "path": "日志::周一",
+          "anchor": "日志::周一#2",
+          "level": 2,
+          "fromLine": 13,
+          "toLine": 21,
+          "hash": "f3193993f794c954"
+        },
+        {
+          "path": "日志::周一::记录",
+          "anchor": "日志::周一::记录#3",
+          "level": 3,
+          "fromLine": 15,
+          "toLine": 18,
+          "hash": "d43b372d9b7515c9"
+        },
+        {
+          "path": "日志::周一::记录#1",
+          "anchor": "日志::周一::记录\\#1",
+          "level": 3,
+          "fromLine": 19,
+          "toLine": 21,
+          "hash": "64601636970015fe"
+        }
+      ],
+      "anchors": [
+        {
+          "query": "记录",
+          "error": "AMBIGUOUS_HEADING",
+          "candidates": [
+            "日志::周一::记录#1",
+            "日志::周一::记录#2",
+            "日志::周一::记录#3"
+          ]
+        },
+        {
+          "query": "记录#1",
+          "path": "日志::周一::记录#1"
+        },
+        {
+          "query": "记录\\#1",
+          "path": "日志::周一::记录\\#1"
+        },
+        {
+          "query": "周一::记录#3",
+          "path": "日志::周一::记录#3"
+        },
+        {
+          "query": "日志::周一#2",
+          "path": "日志::周一#2"
+        },
+        {
+          "query": "周一",
+          "error": "AMBIGUOUS_HEADING",
+          "candidates": [
+            "日志::周一#1",
+            "日志::周一#2"
+          ]
+        },
+        {
+          "query": "周一#2::记录",
+          "error": "NOT_FOUND"
+        },
+        {
+          "query": "记录#4",
+          "error": "NOT_FOUND"
+        },
+        {
+          "query": "日志::周一::记录#2",
+          "path": "日志::周一::记录#2"
+        }
+      ],
+      "ops": [
+        {
+          "op": "append",
+          "heading": "记录#1",
+          "content": "补上午。",
+          "expected": "expected/anchor-nested.append-ordinal.md",
+          "newBaseHash": "c27986f98b32b0db"
+        }
+      ]
+    },
+    {
+      "file": "anchor-empty.md",
+      "fileHash": "20bf306fd8085ddb",
+      "frontmatter": null,
+      "outline": [
+        {
+          "path": "",
+          "anchor": null,
+          "level": 1,
+          "fromLine": 1,
+          "toLine": 6,
+          "hash": "22de08a3af3f5165"
+        },
+        {
+          "path": "::子节",
+          "anchor": "::子节",
+          "level": 2,
+          "fromLine": 5,
+          "toLine": 6,
+          "hash": "86f46a70e0e22943"
+        },
+        {
+          "path": "周报",
+          "anchor": "周报",
+          "level": 1,
+          "fromLine": 7,
+          "toLine": 11,
+          "hash": "17b4a4f3405fbb1b"
+        },
+        {
+          "path": "周报::",
+          "anchor": null,
+          "level": 2,
+          "fromLine": 9,
+          "toLine": 11,
+          "hash": "c1d2bb9cce437461"
+        },
+        {
+          "path": "周报::::记录",
+          "anchor": "周报::::记录",
+          "level": 3,
+          "fromLine": 11,
+          "toLine": 11,
+          "hash": "6e7b9f50662be673"
+        }
+      ],
+      "anchors": [
+        {
+          "query": "子节",
+          "path": "::子节"
+        },
+        {
+          "query": "::子节",
+          "path": "::子节"
+        },
+        {
+          "query": "周报::::记录",
+          "path": "周报::::记录"
+        },
+        {
+          "query": "记录",
+          "path": "周报::::记录"
+        },
+        {
+          "query": "周报::记录",
+          "error": "NOT_FOUND"
+        }
+      ],
+      "ops": []
+    }
+  ]
+}

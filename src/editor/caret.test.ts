@@ -6,7 +6,12 @@ import { dialectBase, dialectExtensions } from "./dialectParser";
 import { blockDecorationField } from "./blocks/field";
 import { livePreviewConfig } from "./previewConfig";
 import { withCompleteTree } from "./syntax";
-import { strandedIn, undoLandingOf } from "./caret";
+import { findTookKeys, landingInside, landingShownBy, nearestDelta, strandedIn, undoLandingOf } from "./caret";
+import { SearchQuery, openSearchPanel, search, setSearchQuery } from "@codemirror/search";
+import { Decoration, EditorView } from "@codemirror/view";
+import { LANDING_CLASS, landingIn, livePreview } from "./livePreview";
+import { tableEntryAt, tableMarks } from "./blocks/table";
+import { cellSourceRange, parseTable } from "./tableEdit";
 import { activeEditField, setActiveEdit, tableInlineEdit } from "./tableInlineEdit";
 import { activePropField, propAt, propertiesState, parsePropsOf, setActiveProp } from "./blocks/properties";
 
@@ -275,5 +280,226 @@ describe("R2c · a caret stranded inside a B block re-enters it (strandedIn)", (
     const open = inside.update({ effects: setActiveEdit.of({ tableFrom: 0, row: 0, col: 0 }) }).state;
     expect(strandedIn(open)).toBeNull();
     expect(strandedIn(source(DOC, 3))).toBeNull();
+  });
+});
+
+describe("落点看得见 · landingInside (the one predicate)", () => {
+  const at = (anchor: number, head = anchor) =>
+    EditorState.create({ doc: "0123456789", selection: { anchor, head } });
+
+  it("a caret strictly inside is inside; at either edge it is not", () => {
+    expect(landingInside(at(5), 3, 7)).toBe(true);
+    expect(landingInside(at(3), 3, 7)).toBe(false);
+    expect(landingInside(at(7), 3, 7)).toBe(false);
+  });
+
+  it("a selection across the whole range is not inside; one ending inside is", () => {
+    expect(landingInside(at(1, 9), 3, 7)).toBe(false);
+    expect(landingInside(at(3, 7), 3, 7)).toBe(false);
+    expect(landingInside(at(1, 5), 3, 7)).toBe(true);
+    expect(landingInside(at(5, 9), 3, 7)).toBe(true);
+    expect(landingInside(at(4, 6), 3, 7)).toBe(true);
+  });
+
+  it("non-strict also counts a selection equal to (or within) the range, never a caret at an edge or a wider span", () => {
+    const loose = { strict: false };
+    expect(landingInside(at(3, 7), 3, 7, loose)).toBe(true);
+    expect(landingInside(at(7, 3), 3, 7, loose)).toBe(true);
+    expect(landingInside(at(3, 5), 3, 7, loose)).toBe(true);
+    expect(landingInside(at(3), 3, 7, loose)).toBe(false);
+    expect(landingInside(at(7), 3, 7, loose)).toBe(false);
+    expect(landingInside(at(2, 7), 3, 7, loose)).toBe(false);
+    expect(landingInside(at(1, 9), 3, 7, loose)).toBe(false);
+  });
+});
+
+describe("落点看得见 · landingShownBy (what the renderers do with the landing)", () => {
+  const URL = "https://openmarkdown.dev/editor/docs/fidelity/#what-the-exceptions-look-like";
+  const LINK = `[Docs →](${URL})`;
+  const DOC = `Open ${LINK} now.\n\n| a | b |\n| - | - |\n| the | 2 |\n\n[x](#the)\n`;
+  const word = (w: string, from = 0) => {
+    const i = DOC.indexOf(w, from);
+    return { anchor: i, head: i + w.length };
+  };
+  const state = (sel: { anchor: number; head?: number }, mode: "live" | "reading" = "live") =>
+    withCompleteTree(
+      EditorState.create({
+        doc: DOC,
+        selection: sel,
+        extensions: [
+          markdown({ base: dialectBase, extensions: dialectExtensions, addKeymap: false }),
+          livePreviewConfig.of({ revealOnSelection: mode === "live", resolveImage: (s: string) => s }),
+          mode === "reading" ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : [],
+          history(),
+          tableInlineEdit,
+          propertiesState,
+          livePreview,
+        ],
+      }),
+    );
+
+  it("a Find match inside a long URL: revealed in live (no chip over it), marked in Reading", () => {
+    expect(landingShownBy(state(word("exceptions")))).toBe("revealed");
+    expect(landingShownBy(state(word("exceptions"), "reading"))).toBe("marked");
+  });
+
+  it("a drag across the whole link keeps the chip: nothing hides the landing", () => {
+    const from = DOC.indexOf(LINK) - 2;
+    const s = state({ anchor: from, head: from + LINK.length + 4 });
+    expect(landingShownBy(s)).toBe("plain");
+  });
+
+  it("a range inside a table cell is painted by the table", () => {
+    expect(landingShownBy(state(word("the", DOC.indexOf("|"))))).toBe("painted");
+    expect(landingShownBy(state(word("the", DOC.indexOf("|")), "reading"))).toBe("painted");
+  });
+
+  it("a caret stranded in a table with no cell open marks the whole table until R2c enters it; the open cell paints it", () => {
+    const pos = DOC.indexOf("the", DOC.indexOf("|")) + 1;
+    const s = state({ anchor: pos });
+    expect(landingShownBy(s)).toBe("marked");
+    const hit = strandedIn(s)!;
+    const entered = s.update(tableEntryAt(s, hit.block, hit.pos)!.spec).state;
+    expect(landingShownBy(entered)).toBe("painted");
+  });
+
+  it("a match on a pipe or the delimiter row (no cell paints it) marks the whole table", () => {
+    expect(landingShownBy(state(word("|", DOC.indexOf("| a"))))).toBe("marked");
+    expect(landingShownBy(state(word("-", DOC.indexOf("| -"))))).toBe("marked");
+    expect(landingShownBy(state(word("-", DOC.indexOf("| -")), "reading"))).toBe("marked");
+  });
+
+  it("a landing mark counts only where it covers the hide it stands for", () => {
+    const s = EditorState.create({ doc: "0123456789", selection: { anchor: 5 } });
+    const hide = Decoration.replace({});
+    const mark = Decoration.mark({ class: LANDING_CLASS });
+    const all = { from: 0, to: 10 };
+    // A mark holding the landing but not the hide (4–9 vs 3–7): still hidden.
+    expect(landingIn(s, Decoration.set([hide.range(3, 7), mark.range(4, 9)], true), all, false)).toBe("hidden");
+    expect(landingIn(s, Decoration.set([mark.range(2, 8), hide.range(3, 7)], true), all, false)).toBe("marked");
+    expect(landingIn(s, Decoration.set([hide.range(3, 7), mark.range(3, 7)], true), all, false)).toBe("marked");
+    expect(landingIn(s, Decoration.none, all, true)).toBe("revealed");
+  });
+
+  it("a drag across a whole table keeps its marks equal move to move (TableWidget.eq holds: no redraw per pointer move)", () => {
+    const from = DOC.indexOf("| a");
+    const to = DOC.indexOf("[x]") - 2;
+    const marksOf = (anchor: number, head: number) => {
+      const s = state({ anchor, head });
+      return tableMarks(s, parseTable(s.sliceDoc(from, to), from)!);
+    };
+    const spanned = marksOf(2, to + 1);
+    expect(spanned.length).toBeGreaterThan(0);
+    expect(marksOf(2, to + 4)).toEqual(spanned);
+    expect(marksOf(3, to + 2)).toEqual(spanned);
+    // Only an endpoint strictly inside the table moves them (the landing is there).
+    expect(marksOf(2, DOC.indexOf("the", from) + 1)).not.toEqual(spanned);
+  });
+
+  it("ordinary text is plain", () => {
+    expect(landingShownBy(state({ anchor: 2 }))).toBe("plain");
+  });
+});
+
+describe("R2c · a selection inside one cell enters it once the body has the keys", () => {
+  const TABLE = "| one | two |\n| - | - |\n| the | 2 |\n";
+  const DOC = `${TABLE}\nafter\n`;
+  const the = DOC.indexOf("the");
+
+  it("a range in one cell enters that cell, the same text selected", () => {
+    const s = live(DOC);
+    const sel = s.update({ selection: { anchor: the, head: the + 3 } }).state;
+    const hit = strandedIn(sel, true);
+    expect(hit?.block.id).toBe("table");
+    expect([hit?.pos, hit?.head]).toEqual([the, the + 3]);
+    const entry = tableEntryAt(sel, hit!.block, hit!.pos, hit!.head)!;
+    expect(entry.caret).toEqual({ anchor: 0, head: 3 });
+    const entered = sel.update(entry.spec).state;
+    expect(entered.field(activeEditField)?.row).toBe(1);
+    expect(entered.field(activeEditField)?.col).toBe(0);
+    expect(entered.selection.main.from).toBe(the);
+    expect(entered.selection.main.to).toBe(the + 3);
+  });
+
+  it("not while the Find input has the keys, and not with no focus information", () => {
+    const sel = live(DOC).update({ selection: { anchor: the, head: the + 3 } }).state;
+    expect(strandedIn(sel, false)).toBeNull();
+    expect(strandedIn(sel)).toBeNull();
+  });
+
+  it("a range across two cells is left where it is", () => {
+    const from = DOC.indexOf("one");
+    const sel = live(DOC).update({ selection: { anchor: from, head: DOC.indexOf("two") + 1 } }).state;
+    expect(strandedIn(sel, true)).toBeNull();
+  });
+});
+
+describe("L2 · nearestDelta (the landing scroll)", () => {
+  it("does not move what is in view; otherwise scrolls the least", () => {
+    expect(nearestDelta(100, 120, 0, 500)).toBe(0);
+    expect(nearestDelta(600, 620, 0, 500)).toBe(120);
+    expect(nearestDelta(-50, -30, 0, 500)).toBe(-50);
+    // Taller than the view: its top comes to the top.
+    expect(nearestDelta(600, 1300, 0, 500)).toBe(600);
+  });
+});
+
+describe("R2c · opening Find closes an open part (the table then paints every match)", () => {
+  // Not aligned: leaving a cell re-aligns the table, and the caret keeps its cell.
+  const TABLE = "| one | two |\n| - | - |\n| the | 2 |";
+  const DOC = `${TABLE}\n\nthe end\n`;
+  const the = DOC.indexOf("the");
+
+  /** Run a search command (as the keymap / the Find command do) on a state. */
+  function run(cmd: typeof openSearchPanel, state: EditorState): EditorState {
+    // A view dispatches specs; the commands hand it one.
+    let out: EditorState | null = null;
+    cmd({ state, dispatch: (spec: TransactionSpec) => (out = state.update(spec).state), focus: () => {} } as unknown as EditorView);
+    if (!out) throw new Error("the search command did nothing");
+    return out;
+  }
+  /** Find opened (Cmd+F), then `the` typed into it. */
+  const openFind = (state: EditorState) => {
+    const opened = run(openSearchPanel, state);
+    return opened.update({ effects: setSearchQuery.of(new SearchQuery({ search: "the", literal: true })) }).state;
+  };
+
+  const inCell = () =>
+    live(DOC, 0, search()).update({ effects: setActiveEdit.of({ tableFrom: 0, row: 1, col: 0 }), selection: { anchor: the + 1 } }).state;
+
+  it("ends the open cell edit when the panel opens", () => {
+    const before = inCell();
+    const after = openFind(before);
+    const close = findTookKeys(before, after);
+    expect(close).not.toBeNull();
+    const closed = after.update(close!).state;
+    expect(closed.field(activeEditField)).toBeNull();
+    // The caret stays in the same cell, at the same offset (an ordinary exit puts
+    // it after the table), though the table was re-aligned around it.
+    expect(closed.doc.toString()).not.toBe(before.doc.toString());
+    const head = closed.selection.main.head;
+    const cell = cellSourceRange(parseTable(closed.sliceDoc(0, closed.doc.lineAt(head).to), 0)!, 1, 0)!;
+    expect(head - cell.from).toBe(before.selection.main.head - the);
+    // The cell is no longer open, so its match is painted with the others.
+    const model = parseTable(closed.sliceDoc(0, closed.doc.toString().indexOf("\n\n")), 0)!;
+    expect(tableMarks(closed, model).some((m) => m.row === 1 && m.col === 0)).toBe(true);
+  });
+
+  it("does nothing when no part is open, or the panel was already open", () => {
+    const plain = live(DOC, 0, search());
+    expect(findTookKeys(plain, openFind(plain))).toBeNull();
+    const open = openFind(inCell());
+    expect(findTookKeys(open, open.update({ effects: setActiveEdit.of({ tableFrom: 0, row: 1, col: 0 }) }).state)).toBeNull();
+  });
+
+  it("the caret left in the cell is not re-entered while the Find input has the keys", () => {
+    const closed = (() => {
+      const before = inCell();
+      const after = openFind(before);
+      return after.update(findTookKeys(before, after)!).state;
+    })();
+    expect(strandedIn(closed, false)).toBeNull();
+    // The body takes the keys back (Esc closes Find): the cell opens again at the caret.
+    expect(strandedIn(closed, true)?.block.id).toBe("table");
   });
 });

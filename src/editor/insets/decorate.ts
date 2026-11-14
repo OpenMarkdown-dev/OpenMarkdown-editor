@@ -54,8 +54,14 @@ export function decorateInsets(state: EditorState, from: number, to: number, dec
  * Container indentation and the marker→content gap render as nothing. Not
  * atomic: a caret can still stand on either side, which is what Tab and the
  * structure keys read.
+ *
+ * Not a hiding path for the landing (spec: caret-rules / 落点看得见): it hides
+ * only indent whitespace, a caret inside it is drawn at the content edge, and
+ * only a Find for runs of spaces can select into it (accepted; see the change's
+ * apply notes). `landingExempt` says so to the landing verdict (`livePreview.ts`
+ * `inlineLanding`); the gate registers the reason.
  */
-const zeroWidth = Decoration.replace({});
+const zeroWidth = Decoration.replace({ landingExempt: true });
 
 /** Fold toggle x on a line the composer did not decorate (a top-level heading). */
 const FOLD_DEFAULT = css(sub(ZERO, FOLD_OFFSET));
@@ -90,9 +96,18 @@ export const insetStyles = {
     // top alignment puts the glyph in the same place.
     verticalAlign: "top",
   },
-  // The task checkbox is part of the item's marker region: its width plus one
-  // marker gap is exactly the TASK_BOX the composer adds to the content column.
+  // The task checkbox is part of its list's marker box: its width plus one
+  // marker gap is exactly the TASK_BOX `listBox` (metrics.ts) reserves for it,
+  // at the end of the box, so the text starts at the list's content column.
+  //
+  // `font: inherit`: a form control does not inherit the text's font, so
+  // without it `em` and `ch` here resolve on the input's own UA font (13.33px
+  // system font)
+  // and the checkbox comes out ~5px narrower than the box it was sized for —
+  // a task's text then starts left of its own wrapped rows and of its plain
+  // siblings (measured on the demo, change: demo-phone-and-list-indent).
   ".cm-line .om-checkbox": {
+    font: "inherit",
     width: css(TASK_CHECK),
     height: css(TASK_CHECK),
     margin: `0 ${css(MARKER_GAP)} 0 0`,

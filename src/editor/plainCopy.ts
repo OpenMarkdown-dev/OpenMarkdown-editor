@@ -22,10 +22,10 @@
 import { EditorState } from "@codemirror/state";
 import type { SyntaxNode, Tree } from "@lezer/common";
 import {
-  BULLET_GLYPH,
   FORMATTING_MARKS,
   TASK_GLYPH,
   linkTextIsEmpty,
+  listMarkStandIn,
 } from "./previewConceal";
 import { chipLabel } from "./refChip";
 import { calloutTitle } from "./callout";
@@ -34,6 +34,7 @@ import { mathBody } from "./math";
 import { parseProps } from "./frontmatterProps";
 import { frontmatterChipSummary } from "./skill";
 import { boundedTree } from "./syntax";
+import { isLink, linkMarkConcealable, referenceLabels, type ReferenceLabels } from "./linkRefs";
 import { imageLabelOf } from "./imageAlt";
 import { parseTable, serializeTable, tableDataFromParsed } from "./tableEdit";
 
@@ -61,8 +62,10 @@ function collectReplacements(
   tree: Tree,
   from: number,
   to: number,
+  labels: ReferenceLabels,
 ): Replacement[] {
   const out: Replacement[] = [];
+  const read = (a: number, b: number) => state.sliceDoc(a, b);
   const push = (f: number, t: number, text = "") => {
     if (t > f) out.push({ from: f, to: t, text });
   };
@@ -72,6 +75,13 @@ function collectReplacements(
     to,
     enter: (node) => {
       const name = node.name;
+
+      // A bracket is dropped only when its pair is a link (the one predicate,
+      // `linkRefs.ts`): `[!FOOBAR]` and an undefined `[foo]` copy as written.
+      if (name === "LinkMark") {
+        if (linkMarkConcealable(node.node, read, labels)) push(node.from, node.to);
+        return;
+      }
 
       if (FORMATTING_MARKS.has(name)) {
         // `# heading` / `> quote` also swallow the space after the marker.
@@ -88,17 +98,18 @@ function collectReplacements(
 
       switch (name) {
         case "Link": {
+          if (!isLink(node.node, read, labels)) return; // text, copied as written
           const url = childrenOf(node.node).find((c) => c.name === "URL");
-          if (!url) return;
-          if (linkTextIsEmpty(node.from, url.from)) {
+          if (url && linkTextIsEmpty(node.from, url.from)) {
             // `[](url)` renders as a short label derived from the URL, not blank.
             push(node.from, node.to, chipLabel(state.sliceDoc(url.from, url.to)));
             return false; // children already covered by the whole-link span
           }
           // Only the label is visible; `(url "title")` is hidden. The surrounding
-          // LinkMark children are dropped by the generic rule above.
+          // LinkMark children are dropped by the LinkMark rule above; a
+          // reference link's `[r]` / `[]` goes too (`[a][r]` reads `a`).
           for (const child of childrenOf(node.node)) {
-            if (child.name === "URL" || child.name === "LinkTitle") push(child.from, child.to);
+            if (child.name === "URL" || child.name === "LinkTitle" || child.name === "LinkLabel") push(child.from, child.to);
           }
           return;
         }
@@ -117,10 +128,14 @@ function collectReplacements(
 
         case "ListMark": {
           const item = node.node.parent;
-          // Ordered markers are only coloured, never hidden — so `1.` is visible
-          // and must be copied. Unordered ones render as a bullet.
-          if (!item || item.parent?.name === "OrderedList") return;
-          push(node.from, node.to, BULLET_GLYPH);
+          // The renderer's own answer: `1.` is visible and copied as is; a
+          // bullet renders as `•`; a task's `-` renders as nothing (its
+          // checkbox is the marker, copied below as ☐ / ☑).
+          const standIn = item ? listMarkStandIn(item) : null;
+          if (standIn === null) return;
+          // A dropped `-` takes its space with it, or the copy would start with one.
+          const end = !standIn && state.sliceDoc(node.to, node.to + 1) === " " ? node.to + 1 : node.to;
+          push(node.from, end, standIn);
           return;
         }
 
@@ -176,7 +191,7 @@ function collectReplacements(
           if (!parsed) return;
           const reflowed = serializeTable(
             tableDataFromParsed(parsed, (cell) =>
-              renderWith(state, tree, cell.from, cell.to),
+              renderWith(state, tree, cell.from, cell.to, labels),
             ),
           );
           push(node.from, node.to, reflowed);
@@ -208,12 +223,17 @@ export interface RenderedText {
 export function renderedTextForRange(state: EditorState, from: number, to: number): RenderedText {
   if (to <= from) return { text: "", complete: true };
   const { tree, complete } = boundedTree(state, to);
-  return { text: renderWith(state, tree, from, to), complete };
+  // Reference definitions may sit after the range: their labels come from the
+  // whole-document parse (bounded too — a definition it has not reached reads
+  // as text, the predicate's safe side).
+  const whole = boundedTree(state).tree;
+  const labels = referenceLabels(whole, (a, b) => state.sliceDoc(a, b));
+  return { text: renderWith(state, tree, from, to, labels), complete };
 }
 
-function renderWith(state: EditorState, tree: Tree, from: number, to: number): string {
+function renderWith(state: EditorState, tree: Tree, from: number, to: number, labels: ReferenceLabels): string {
   if (to <= from) return "";
-  const spans = collectReplacements(state, tree, from, to).sort((a, b) => a.from - b.from);
+  const spans = collectReplacements(state, tree, from, to, labels).sort((a, b) => a.from - b.from);
 
   let out = "";
   let pos = from;

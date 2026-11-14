@@ -23,6 +23,14 @@ import { type EditorView, WidgetType } from "@codemirror/view";
 /** The attribute the one selected-state rule keys on. Only this module writes it. */
 export const COVERED_ATTR = "data-om-covered";
 
+/**
+ * The attribute a block carries when the landing (the main selection) lies
+ * inside it and the block cannot draw it at a finer grain (spec: caret-rules /
+ * 落点看得见, outcome 3): the whole widget is marked. Set by `blocks/field.ts`
+ * through this wrapper; styled once in `theme.ts`.
+ */
+export const LANDING_ATTR = "data-om-landing";
+
 /** The host element's class (the framework's own, identical for every block). */
 export const HOST_CLASS = "om-select-host";
 /** Extra class on an inline host (an image inside a line). */
@@ -38,9 +46,11 @@ export function coveredBySelection(state: EditorState, from: number, to: number)
   return state.selection.ranges.some((r) => !r.empty && r.from <= from && r.to >= to);
 }
 
-function paint(host: HTMLElement, covered: boolean) {
+function paint(host: HTMLElement, covered: boolean, landing: boolean) {
   if (covered) host.setAttribute(COVERED_ATTR, "");
   else host.removeAttribute(COVERED_ATTR);
+  if (landing) host.setAttribute(LANDING_ATTR, "");
+  else host.removeAttribute(LANDING_ATTR);
 }
 
 /** CM's own widget equality (`WidgetType.compare`, not in its public types). */
@@ -65,6 +75,8 @@ export class SelectableWidget extends WidgetType {
     readonly inner: WidgetType,
     readonly covered: boolean,
     readonly flow: "block" | "inline",
+    /** The landing lies inside and the block does not paint it itself: mark the whole widget. */
+    readonly landing = false,
   ) {
     super();
   }
@@ -74,6 +86,7 @@ export class SelectableWidget extends WidgetType {
       other instanceof SelectableWidget &&
       other.covered === this.covered &&
       other.flow === this.flow &&
+      other.landing === this.landing &&
       sameWidget(this.inner, other.inner)
     );
   }
@@ -82,7 +95,7 @@ export class SelectableWidget extends WidgetType {
     const host = document.createElement(this.flow === "block" ? "div" : "span");
     host.className = this.flow === "block" ? HOST_CLASS : `${HOST_CLASS} ${HOST_INLINE_CLASS}`;
     host.appendChild(this.inner.toDOM(view));
-    paint(host, this.covered);
+    paint(host, this.covered, this.landing);
     return host;
   }
 
@@ -97,7 +110,7 @@ export class SelectableWidget extends WidgetType {
       if (prev.inner.constructor !== this.inner.constructor) return false;
       if (!this.inner.updateDOM(child, view, prev.inner)) return false;
     }
-    paint(dom, this.covered);
+    paint(dom, this.covered, this.landing);
     return true;
   }
 
@@ -125,6 +138,6 @@ export class SelectableWidget extends WidgetType {
 }
 
 /** Wrap a rendered block (`"block"`) or an inline image (`"inline"`) with its selected state. */
-export function withSelectedState(inner: WidgetType, covered: boolean, flow: "block" | "inline"): SelectableWidget {
-  return new SelectableWidget(inner, covered, flow);
+export function withSelectedState(inner: WidgetType, covered: boolean, flow: "block" | "inline", landing = false): SelectableWidget {
+  return new SelectableWidget(inner, covered, flow, landing);
 }
