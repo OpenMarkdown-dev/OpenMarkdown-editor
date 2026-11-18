@@ -16,6 +16,12 @@ export interface LivePreviewConfig {
   /** false = reading mode: always render, never reveal source. */
   revealOnSelection: boolean;
   /**
+   * The user may not change the document at all (`editable: false`; change:
+   * editor-per-instance, D2): unlike reading mode, a task checkbox does not
+   * toggle either. Absent: false.
+   */
+  locked?: boolean;
+  /**
    * Resolve an image src to a loadable URL. Returns `null` when the local path
    * is outside the asset-protocol whitelist (or unresolvable), signalling the
    * image should degrade to source display (spec: 白名单外路径降级).

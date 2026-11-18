@@ -16,6 +16,9 @@ import {
   cellDisplaySource,
   CELL_SYNC_USER_EVENT,
   tableGridNav,
+  settleCellsChange,
+  applyTableChanges,
+  appendRowChange,
   type TableData,
 } from "./tableEdit";
 
@@ -214,11 +217,114 @@ describe("tableStructEdit — insert/delete/move/align (spec: 插入行与列, �
   it("moveRowUp at the first body row is a no-op (can't cross the header)", () => {
     expect(tableStructEdit(NAV_SRC, 0, at("张三"), "moveRowUp")).toBeNull();
   });
+
+  // change: editor-edit-locality — ops write in the table's own style.
+  it("row ops keep every other line byte for byte (compact stays compact)", () => {
+    expect(tableStructEdit(NAV_SRC, 0, at("张三"), "insertRowBelow")!.insert).toBe(
+      ["| Name | Age |", "| --- | ---: |", "| 张三 | 28 |", "|  |  |", "| Bob | 30 |"].join("\n"),
+    );
+    expect(tableStructEdit(NAV_SRC, 0, at("Bob"), "moveRowUp")!.insert).toBe(
+      ["| Name | Age |", "| --- | ---: |", "| Bob | 30 |", "| 张三 | 28 |"].join("\n"),
+    );
+    expect(tableStructEdit(NAV_SRC, 0, at("张三"), "deleteRow")!.insert).toBe(
+      ["| Name | Age |", "| --- | ---: |", "| Bob | 30 |"].join("\n"),
+    );
+  });
+
+  it("column ops splice that column and keep each row's other cells as written", () => {
+    expect(tableStructEdit(NAV_SRC, 0, at("Name"), "moveColRight")!.insert).toBe(
+      ["| Age | Name |", "| ---: | --- |", "| 28 | 张三 |", "| 30 | Bob |"].join("\n"),
+    );
+    expect(tableStructEdit(NAV_SRC, 0, at("Name"), "insertColLeft")!.insert).toBe(
+      ["|  | Name | Age |", "| --- | --- | ---: |", "|  | 张三 | 28 |", "|  | Bob | 30 |"].join("\n"),
+    );
+    expect(tableStructEdit(NAV_SRC, 0, at("Age"), "deleteColumn")!.insert).toBe(
+      ["| Name |", "| --- |", "| 张三 |", "| Bob |"].join("\n"),
+    );
+  });
+
+  it("an aligned table stays aligned: new rows and columns are padded to its widths", () => {
+    const src = ["| Name | Age |", "| ---- | --: |", "| 张三 | 28  |", "| Bob  | 30  |"].join("\n");
+    expect(tableStructEdit(src, 0, src.indexOf("Bob"), "insertRowAbove")!.insert).toBe(
+      ["| Name | Age |", "| ---- | --: |", "| 张三 | 28  |", "|      |     |", "| Bob  | 30  |"].join("\n"),
+    );
+    expect(tableStructEdit(src, 0, src.indexOf("Bob"), "insertColRight")!.insert).toBe(
+      ["| Name |     | Age |", "| ---- | --- | --: |", "| 张三 |     | 28  |", "| Bob  |     | 30  |"].join("\n"),
+    );
+  });
+
+  it("toggleAlign rewrites that delimiter cell only, keeping its length when it fits", () => {
+    const src = ["|a|b|", "|---|-|", "|1|2|"].join("\n");
+    expect(tableStructEdit(src, 0, src.indexOf("a"), "toggleAlign")!.insert).toBe(["|a|b|", "|:--|-|", "|1|2|"].join("\n"));
+    // `-` is too short for `:-`: it grows (a compact table has no widths to keep).
+    expect(tableStructEdit(src, 0, src.indexOf("b"), "toggleAlign")!.insert).toBe(["|a|b|", "|---|:-|", "|1|2|"].join("\n"));
+  });
+
+  it("format is the canonical whole-table rewrite; a pipe-less table falls back to it for every op", () => {
+    expect(tableStructEdit(NAV_SRC, 0, at("Name"), "format")!.insert).toBe(
+      serializeTable(tableDataFromParsed(parseTable(NAV_SRC, 0)!)),
+    );
+    const bare = "a | b\n--|--\n1 | 2";
+    expect(tableStructEdit(bare, 0, bare.indexOf("1"), "insertRowBelow")!.insert).toBe(
+      "| a   | b   |\n| --- | --- |\n| 1   | 2   |\n|     |     |",
+    );
+  });
+});
+
+describe("settleCellsChange — leaving a cell edit touches only that cell (change: editor-edit-locality)", () => {
+  /** Replace (row, col) with `text` the way the cell editor does, then settle. */
+  const editAndSettle = (src: string, row: number, col: number, text: string) => {
+    const ch = cellEditChange(parseTable(src, 0)!, row, col, text)!;
+    const typed = src.slice(0, ch.from) + ch.insert + src.slice(ch.to);
+    return applyTableChanges(typed, 0, settleCellsChange(typed, 0, [{ row, col }], src));
+  };
+  const ALIGNED = ["| Name | Age |", "| ---- | --: |", "| 张三 | 28  |", "| Bob  | 30  |"].join("\n");
+
+  it("compact: nothing beyond the typed text", () => {
+    expect(editAndSettle(NAV_SRC, 2, 0, "Robert")).toBe(NAV_SRC.replace("| Bob |", "| Robert |"));
+  });
+
+  it("aligned: a cell that still fits is re-padded in place; the others are untouched", () => {
+    expect(editAndSettle(ALIGNED, 2, 0, "Al")).toBe(ALIGNED.replace("| Bob  |", "| Al   |"));
+  });
+
+  it("aligned: a cell that no longer fits widens its column only, delimiter dashes included", () => {
+    expect(editAndSettle(ALIGNED, 2, 0, "Roberto")).toBe(
+      ["| Name    | Age |", "| ------- | --: |", "| 张三    | 28  |", "| Roberto | 30  |"].join("\n"),
+    );
+  });
+
+  it("CJK counts double: 李四 fits where Bob was, 王小明 does not", () => {
+    expect(editAndSettle(ALIGNED, 2, 0, "李四")).toBe(ALIGNED.replace("| Bob  |", "| 李四 |"));
+    expect(editAndSettle(ALIGNED, 2, 0, "王小明").split("\n")[1]).toBe("| ------ | --: |");
+  });
+
+  it("right-justified columns stay right-justified", () => {
+    const src = ["| Item | Price |", "|------|------:|", "| a    |    $1 |", "| b    |   $20 |"].join("\n");
+    expect(editAndSettle(src, 1, 1, "$300")).toBe(src.replace("|    $1 |", "|  $300 |"));
+    expect(editAndSettle(src, 1, 1, "$40000")).toBe(
+      ["| Item | Price  |", "|------|-------:|", "| a    | $40000 |", "| b    |    $20 |"].join("\n"),
+    );
+  });
+
+  it("nothing for a table inside a container, or with nothing edited", () => {
+    expect(settleCellsChange("|a|b|\n  |---|---|\n  |1|2|", 0, [{ row: 1, col: 0 }])).toEqual([]);
+    expect(settleCellsChange(ALIGNED, 0, [])).toEqual([]);
+  });
+});
+
+describe("appendRowChange — Tab / Enter past the last cell", () => {
+  it("appends one row in the table's style and leaves the rest as written", () => {
+    const aligned = ["| a   | b   |", "| --- | --- |", "| 1   | 2   |"].join("\n");
+    expect(appendRowChange(parseTable(aligned, 0)!)!.insert).toBe(aligned + "\n|     |     |");
+    const compact = "|a|b|\n|-|-|\n|1|2|";
+    expect(appendRowChange(parseTable(compact, 0)!)!.insert).toBe(compact + "\n|||");
+  });
 });
 
 // --- reflow (task 3, idempotent) --------------------------------------------
 
-describe("reflowChangeIfNeeded — auto-align on leave (spec: 已对齐离开无改动)", () => {
+describe("reflowChangeIfNeeded — the canonical form Format table writes (idempotent)", () => {
   it("returns a change that canonicalizes a ragged table", () => {
     const ragged = ["|a|b|", "|-|-|", "|longcell|x|"].join("\n");
     const r = reflowChangeIfNeeded(ragged, 0)!;
@@ -346,6 +452,17 @@ describe("cellSourceRange / cellEditChange — single-cell sync (task 1.1)", () 
     expect(out).toBe(["| a | b |", "| - | - |", "|    W     | y |"].join("\n"));
   });
 
+  it("puts an empty cell's insertion point one space in from its left pipe", () => {
+    const src = ["| a | b |", "| - | - |", "|     | y |", "|| y |"].join("\n");
+    const p = parseTable(src, 0)!;
+    const at = (row: number) => {
+      const ch = cellEditChange(p, row, 0, "z")!;
+      return (src.slice(0, ch.from) + ch.insert + src.slice(ch.to)).split("\n")[row + 1];
+    };
+    expect(at(1)).toBe("| z    | y |");
+    expect(at(2)).toBe("|z| y |");
+  });
+
   it("addresses an empty cell as a zero-width point between its pipes", () => {
     const src = ["| a | b |", "| - | - |", "|  | y |"].join("\n");
     const p = parseTable(src, 0)!;
@@ -353,7 +470,7 @@ describe("cellSourceRange / cellEditChange — single-cell sync (task 1.1)", () 
     expect(r.to).toBe(r.from); // nothing to replace — an insertion point
     const ch = cellEditChange(p, 1, 0, "z")!;
     const out = src.slice(0, ch.from) + ch.insert + src.slice(ch.to);
-    // Where inside the padding the point sits is not contracted (reflow on leave
+    // Where inside the padding the point sits is not contracted (the settle on leave
     // normalises it); what MUST hold is that it stays INSIDE the pipes, so the row
     // still parses as the same two cells with the typed text in the first one.
     const reparsed = parseTable(out, 0)!;
@@ -442,21 +559,5 @@ describe("CELL_SYNC_USER_EVENT — one input session is one undo unit (F2)", () 
     // WORSE than omitting the field, which is the trap that makes it easy to write.
     expect(undoPresses("input")).toBe(5);
     expect(undoPresses(undefined)).toBe(1);
-  });
-});
-
-describe("posAfterReflow — a caret in a cell keeps its cell through a re-align", () => {
-  it("keeps the cell and the offset; positions outside map as the change does", async () => {
-    const { posAfterReflow, reflowChangeIfNeeded } = await import("./tableEdit");
-    const text = "| one | two |\n| - | - |\n| the | 2 |";
-    const from = 10;
-    const reflow = reflowChangeIfNeeded(text, from)!;
-    expect(reflow).not.toBeNull();
-    const out = text.length - reflow.insert.length;
-    const inThe = from + text.indexOf("the") + 2; // th|e
-    const mapped = posAfterReflow(text, from, reflow, inThe);
-    expect(reflow.insert.slice(mapped - from - 2, mapped - from + 1)).toBe("the");
-    expect(posAfterReflow(text, from, reflow, 3)).toBe(3);
-    expect(posAfterReflow(text, from, reflow, from + text.length + 5)).toBe(from + text.length + 5 - out);
   });
 });

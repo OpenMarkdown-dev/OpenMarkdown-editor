@@ -1,7 +1,7 @@
 import { type EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import type { EditorState } from "@codemirror/state";
 import { BlockMathWidget } from "../widgets";
-import { isMathReady, mathBody, mathLoadFailed, renderFormula } from "../math";
+import { mathBody, mathNeedsLoad, renderFormula } from "../math";
 import { loadMathThenRedraw } from "../mathLoad";
 import { progressiveTree, treeChanged } from "../syntax";
 import { isPending } from "./render";
@@ -35,7 +35,7 @@ export class MathLoadDriver {
   constructor(private readonly load: () => void) {}
 
   check(state: EditorState): void {
-    if (this.asked || isMathReady() || mathLoadFailed()) return;
+    if (this.asked || !mathNeedsLoad(state)) return;
     if (!documentHasMath(state)) return;
     this.asked = true;
     this.load();
@@ -57,7 +57,7 @@ export const blockMathEntry: BlockEntry = {
     // Load failed → null: source, unmarked. Invalid TeX → renderFormula throws
     // and the framework shows the source with the failure mark (change:
     // block-fallback).
-    const mathml = renderFormula(mathBody(state.sliceDoc(node.from, node.to)), true);
+    const mathml = renderFormula(state, mathBody(state.sliceDoc(node.from, node.to)), true);
     if (isPending(mathml)) return mathml;
     return mathml == null ? null : new BlockMathWidget(mathml, node.from);
   },

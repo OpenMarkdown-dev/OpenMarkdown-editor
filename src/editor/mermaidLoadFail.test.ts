@@ -3,7 +3,7 @@ import { EditorState } from "@codemirror/state";
 import { markdown } from "@codemirror/lang-markdown";
 import { blockRanges, blockDecorationField } from "./blocks/field";
 import { dialectBase, dialectExtensions } from "./dialectParser";
-import { mermaidLoadFailed, mermaidLoader, requestMermaid, type MermaidModule } from "./mermaid";
+import { mermaidLoadFailed, mermaidLoader, mermaidDrawer, requestMermaid, type MermaidModule } from "./mermaid";
 import { livePreviewConfig } from "./previewConfig";
 import { withCompleteTree } from "./syntax";
 
@@ -35,7 +35,7 @@ describe("a failed mermaid load", () => {
     // Before any load: the placeholder.
     expect(blockRanges(s()).map((b) => b.id)).toEqual(["mermaid"]);
     let heard = 0;
-    requestMermaid(body, "light", offline, () => heard++, () => true);
+    requestMermaid(body, "light", mermaidDrawer(offline), () => heard++, () => true);
     await settle();
     expect(heard).toBe(1);
     expect(mermaidLoadFailed()).toBe(true);
@@ -47,7 +47,7 @@ describe("a failed mermaid load", () => {
         initialize: () => {},
         mermaidAPI: { render: async () => ({ svg: "<svg></svg>" }), getSiteConfig: () => ({}) },
       }) as MermaidModule;
-    requestMermaid(body, "light", good, () => {}, () => true);
+    requestMermaid(body, "light", mermaidDrawer(good), () => {}, () => true);
     await settle();
     expect(mermaidLoadFailed()).toBe(false);
   });

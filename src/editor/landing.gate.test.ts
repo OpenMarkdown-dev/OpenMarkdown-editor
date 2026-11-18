@@ -194,9 +194,9 @@ describe("G2 · every landing a test can drive is shown", () => {
     const t2 = blockRanges(s).find((b) => b.id === "table")!;
     s = step(s, { effects: setActiveEdit.of(null), selection: { anchor: lineAfterBlock(s.doc, t2.to) } });
     // Undo as the view does it: history's transaction, the R2 landing, then R2b
-    // re-entering the cell the landing is in. Twice: the first undo is the Esc's
-    // re-alignment (its own undo step, landing at the table's end), the second
-    // the cell edit itself.
+    // re-entering the cell the landing is in. The fixture's table is compact, so
+    // the Esc settles nothing (change: editor-edit-locality) and one undo takes
+    // back the cell edit itself.
     const undoLanded = (state: EditorState): EditorState => {
       let tr: Transaction | null = null;
       undo({ state, dispatch: (t) => (tr = t) });
@@ -209,10 +209,26 @@ describe("G2 · every landing a test can drive is shown", () => {
       const entry = table ? tableEntryAt(next, table, land.pos) : null;
       return entry ? next.update(entry.spec).state : next;
     };
-    const rows = [shown((s = undoLanded(s)), "undo the re-alignment"), shown((s = undoLanded(s)), "undo the cell edit")];
+    const rows = [shown((s = undoLanded(s)), "undo the cell edit")];
     expect(s.doc.toString()).toBe(DOC);
     expect(s.field(activeEditField)?.row).toBe(2);
     expect(notHidden(rows)).toEqual([]);
+    expect(landingShownBy(s)).toBe("painted");
+  });
+
+  // The open cell paints the caret wherever the outer caret sits in its table
+  // (change: editor-style-contract, design D5): emptying a cell moved the
+  // outer caret past the cell's shrunk source, and the whole table was marked
+  // as the landing — tinted as if selected while the cell was being edited.
+  it("a cell emptied while open is painted by the cell, not marked on the table", () => {
+    let s = stateOf("live");
+    const table = blockRanges(s).find((b) => b.id === "table")!;
+    s = step(s, { effects: setActiveEdit.of({ tableFrom: table.from, row: 2, col: 1 }) });
+    const model = parseTable(s.sliceDoc(table.from, table.to), table.from)!;
+    const cell = model.rows[2].cells[1];
+    s = step(s, { selection: { anchor: cell.to } });
+    s = step(s, { changes: cellEditChange(model, 2, 1, "")!, userEvent: "delete", annotations: cellSync.of(true) });
+    expect(s.field(activeEditField)?.row).toBe(2);
     expect(landingShownBy(s)).toBe("painted");
   });
 

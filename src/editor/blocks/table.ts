@@ -32,7 +32,7 @@ export const tableEntry: BlockEntry = {
       edit && edit.tableFrom === node.from
         ? { row: edit.row, col: edit.col, epoch: edit.epoch }
         : null;
-    return new TableWidget(source, node.from, editing, mathState(), imageEpoch(state), tableMarks(state, model));
+    return new TableWidget(source, node.from, editing, mathState(state), imageEpoch(state), tableMarks(state, model));
   },
   // The table paints the landing in the cell that holds it (spec: caret-rules /
   // 落点看得见, outcome 2): the open cell's own editor, or the marks below.
@@ -162,8 +162,13 @@ export function tableMarks(state: EditorState, model: ParsedTable): TableCellMar
 }
 
 /**
- * Does this table, as built for `state`, draw the landing inside it? A caret:
- * the open cell holds it (the cell's own editor draws it). A range: the marks
+ * Does this table, as built for `state`, draw the landing inside it? A caret
+ * while one of its cells is open: the open cell's own editor draws the caret
+ * the keys go to — wherever the outer caret sits in the table. The outer caret
+ * can fall outside the cell's source while the cell's text changes length
+ * (emptying "10" before typing "12"), and the whole table was then marked as
+ * the landing — tinted as if selected while a cell was being edited (change:
+ * editor-style-contract, design D5). A range: the marks
  * paint some of it as the current match or the selection. False when no cell
  * text is painted (a match on a pipe or the delimiter row: marks clip to cell
  * text) — the block field then marks the whole table (outcome 3).
@@ -174,8 +179,7 @@ export function tableLandingPainted(state: EditorState, block: BlockRange): bool
   const sel = state.selection.main;
   if (sel.empty) {
     const edit = state.field(activeEditField, false);
-    const cell = edit && edit.tableFrom === block.from ? cellSourceRange(model, edit.row, edit.col) : null;
-    return !!cell && cell.from <= sel.head && sel.head <= cell.to;
+    return !!edit && edit.tableFrom === block.from && !!cellSourceRange(model, edit.row, edit.col);
   }
   return tableMarks(state, model).some((m) => m.kind !== "match");
 }

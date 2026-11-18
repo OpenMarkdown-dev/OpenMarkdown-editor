@@ -22,6 +22,7 @@
 import { EditorState } from "@codemirror/state";
 import type { SyntaxNode, Tree } from "@lezer/common";
 import {
+  escapeMark,
   FORMATTING_MARKS,
   TASK_GLYPH,
   linkTextIsEmpty,
@@ -97,6 +98,13 @@ function collectReplacements(
       }
 
       switch (name) {
+        case "Escape": {
+          // What reading mode shows: the escaped character, not the backslash.
+          const mark = escapeMark(node);
+          push(mark.from, mark.to);
+          return;
+        }
+
         case "Link": {
           if (!isLink(node.node, read, labels)) return; // text, copied as written
           const url = childrenOf(node.node).find((c) => c.name === "URL");

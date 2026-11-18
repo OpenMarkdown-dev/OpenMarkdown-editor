@@ -2,9 +2,9 @@ import { logError } from "@/lib/log";
 import { Facet, type EditorState } from "@codemirror/state";
 import type { SyntaxNodeRef } from "@lezer/common";
 import { codeBlockBody } from "./codeblockCopy";
-import type { ColorScheme } from "./environment";
+import { environmentOf, type ColorScheme, type DiagramRenderer } from "./environment";
 import { attemptRenderAsync, type RenderResult } from "./blocks/render";
-import { diagramDeclarationProblem, mermaidMarkup, type SafeMarkup } from "./markup";
+import type { SafeMarkup } from "./markup";
 
 /**
  * Mermaid diagrams for the live-preview editor (change: editor-mermaid). Every
@@ -19,12 +19,14 @@ import { diagramDeclarationProblem, mermaidMarkup, type SafeMarkup } from "./mar
  * - **Lazy.** `import("mermaid")` runs the first time a document shows a
  *   diagram, so the critical path never carries it (bundle gate:
  *   `scripts/check-bundle-budget.mjs`).
- * - **Injected.** This module never names the `mermaid` package: a state renders
- *   diagrams only when it carries a loader (`mermaidLoader`), which the full
- *   entry (`./index.ts`) installs from `./mermaidImport.ts`. The diagram-free
- *   entry (`./base.ts`, published as `@openmarkdown-dev/editor/no-diagrams`)
- *   installs none, so its import closure never reaches Mermaid and a bundler
- *   emits no Mermaid chunk (spec: editor-package / 无图表的入口).
+ * - **Injected.** This module never names the `mermaid` package. A state draws
+ *   diagrams with its drawer (`diagramDrawerOf`, change: editor-lean-deps):
+ *   the host's `renderDiagram` when its environment gives one, else the
+ *   built-in Mermaid when the state carries its loader (`mermaidLoader`),
+ *   which only the full entry (`./index.ts`) installs from
+ *   `./mermaidImport.ts`. The other entries install none, so their import
+ *   closure never reaches Mermaid and a bundler emits no Mermaid chunk (spec:
+ *   editor-package / 入口与内置渲染器).
  * - **A renderer, async.** A render either resolves to SVG or REJECTS; the
  *   rejection is caught once, by `attemptRenderAsync` in `blocks/render.ts`, and
  *   becomes the source with the failure mark (spec: block-editing / 渲染失败只在
@@ -59,18 +61,18 @@ export const diagramRendering = Facet.define<boolean, boolean>({
 export type MermaidLoader = () => Promise<MermaidModule>;
 
 /**
- * How this state loads Mermaid. Unset: it never asks for a render (a diagram
- * already in the render cache still shows — how tests seed one). The full
- * entry installs `importMermaid`; the diagram-free entry installs nothing and
- * turns `diagramRendering` off.
+ * How this state loads the built-in Mermaid. Unset: no built-in renderer — a
+ * fence is a diagram only when the host gives `renderDiagram`. Only the full
+ * entry installs `importMermaid`.
  */
 export const mermaidLoader = Facet.define<MermaidLoader, MermaidLoader | null>({
   combine: (values) => values[0] ?? null,
 });
 
 /**
- * A fenced code block that is a diagram we render (and diagrams are on —
- * `diagramRendering`): info string `mermaid`,
+ * A fenced code block that is a diagram we render (diagrams are on —
+ * `diagramRendering` — and the state has something to draw them with —
+ * `diagramDrawerOf`): info string `mermaid`,
  * closed, and at the top level of the document (a fence inside a quote or list
  * stays a code block — design D6). Returns its line-aligned range and body.
  */
@@ -78,7 +80,7 @@ export function mermaidFence(
   state: EditorState,
   node: SyntaxNodeRef,
 ): { from: number; to: number; body: string } | null {
-  if (node.name !== "FencedCode" || !state.facet(diagramRendering)) return null;
+  if (node.name !== "FencedCode" || !state.facet(diagramRendering) || !diagramDrawerOf(state)) return null;
   const n = node.node;
   if (n.parent && n.parent.name !== "Document") return null;
   const info = n.getChild("CodeInfo");
@@ -92,58 +94,13 @@ export function mermaidFence(
   return body.trim() ? { from, to, body } : null;
 }
 
-// --- The configuration we render with ---------------------------------------
-
-/**
- * One config, always applied whole (design D4). `securityLevel: "strict"`
- * sanitizes labels and disables click handlers — a document is untrusted
- * input. `suppressErrorRendering` keeps mermaid from drawing its own error
- * "bomb" into the page: a failure is ours to show (the source + mark).
- * A system font stack, so text is measured with the same face it is painted
- * with — no web font that might still be loading when mermaid measures.
- */
-export const MERMAID_FONT =
-  'ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif';
-
-export function mermaidConfig(scheme: ColorScheme): Record<string, unknown> {
-  return {
-    startOnLoad: false,
-    securityLevel: "strict",
-    suppressErrorRendering: true,
-    theme: scheme === "dark" ? "dark" : "default",
-    fontFamily: MERMAID_FONT,
-    logLevel: "fatal",
-    maxTextSize: MAX_TEXT_SIZE,
-    htmlLabels: false,
-    flowchart: { htmlLabels: false },
-    secure: SECURE_KEYS,
-  };
-}
-
-/** mermaid's own default, stated so a directive cannot raise it. */
-const MAX_TEXT_SIZE = 50000;
-
-/**
- * Config keys a diagram's `%%{init}%%` directive or front-matter `config:` may
- * NOT set (mermaid deletes them from directives, at any depth) — design D10.
- * mermaid's defaults, plus what keeps the diagram inside our profile: labels
- * stay SVG text (`htmlLabels`), no document-supplied CSS (`themeCSS`) and no
- * font stack carrying CSS (`fontFamily`, `altFontFamily`). `theme` and
- * `themeVariables` stay overridable: mermaid reduces each variable to colour
- * characters (`[\d "#%(),.;A-Za-z]`, no `:` or braces), so they can recolour a
- * diagram but not add a property.
- */
-export const SECURE_KEYS = [
-  "secure", "securityLevel", "startOnLoad", "maxTextSize", "suppressErrorRendering", "maxEdges",
-  "htmlLabels", "themeCSS", "fontFamily", "altFontFamily",
-];
-
 // --- Render cache -----------------------------------------------------------
 
 /** Results kept, oldest dropped first. A document rarely has more diagrams. */
 export const CACHE_LIMIT = 64;
 
-const cacheKey = (body: string, scheme: ColorScheme) => `${scheme}\n${body}`;
+/** Keyed by drawer (`DiagramDrawer.id`; "" is the built-in Mermaid), scheme and source. */
+const cacheKey = (body: string, scheme: ColorScheme, drawer: string) => `${drawer}\n${scheme}\n${body}`;
 const cache = new Map<string, RenderResult<SafeMarkup>>();
 /**
  * Renders in flight → everyone waiting on each (a view torn down and rebuilt
@@ -161,16 +118,16 @@ export function isLargeDiagram(body: string): boolean {
 }
 
 /** Remember a finished render (also how tests seed a rendered sample). */
-export function rememberMermaid(body: string, scheme: ColorScheme, result: RenderResult<SafeMarkup>): void {
-  const key = cacheKey(body, scheme);
+export function rememberMermaid(body: string, scheme: ColorScheme, result: RenderResult<SafeMarkup>, drawer = BUILT_IN): void {
+  const key = cacheKey(body, scheme, drawer);
   cache.delete(key);
   cache.set(key, result);
   while (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value!);
 }
 
 /** The finished render for this source in this scheme, if there is one. */
-export function cachedMermaid(body: string, scheme: ColorScheme): RenderResult<SafeMarkup> | undefined {
-  return cache.get(cacheKey(body, scheme));
+export function cachedMermaid(body: string, scheme: ColorScheme, drawer = BUILT_IN): RenderResult<SafeMarkup> | undefined {
+  return cache.get(cacheKey(body, scheme, drawer));
 }
 
 /**
@@ -179,11 +136,95 @@ export function cachedMermaid(body: string, scheme: ColorScheme): RenderResult<S
  * scheme — so a diagram does not flash back to source while it re-renders
  * (design D3). Undefined = nothing yet ("not now": source, unmarked).
  */
-export function shownMermaid(body: string, scheme: ColorScheme): RenderResult<SafeMarkup> | undefined {
-  const exact = cachedMermaid(body, scheme);
+export function shownMermaid(body: string, scheme: ColorScheme, drawer = BUILT_IN): RenderResult<SafeMarkup> | undefined {
+  const exact = cachedMermaid(body, scheme, drawer);
   if (exact) return exact;
-  const other = cachedMermaid(body, scheme === "dark" ? "light" : "dark");
+  const other = cachedMermaid(body, scheme === "dark" ? "light" : "dark", drawer);
   return other?.kind === "rendered" ? other : undefined;
+}
+
+// --- Drawers: the host's renderer or the built-in Mermaid -------------------
+
+/** The built-in Mermaid's drawer id (and cache namespace). */
+const BUILT_IN = "";
+
+/**
+ * What draws one state's diagrams (change: editor-lean-deps, design D1):
+ * `ready` settles the renderer's load (false: it failed — every diagram stays
+ * source, unmarked), `render` resolves to the sanitised SVG or rejects.
+ */
+export interface DiagramDrawer {
+  readonly id: string;
+  ready(): Promise<boolean>;
+  render(body: string, scheme: ColorScheme): Promise<SafeMarkup>;
+  /** Did the last load fail? Then nothing is coming: source, not the placeholder. */
+  loadFailed(): boolean;
+}
+
+const builtIn = new WeakMap<MermaidLoader, DiagramDrawer>();
+const hosted = new WeakMap<DiagramRenderer, DiagramDrawer>();
+let hostSeq = 0;
+
+/**
+ * The ONE answer to "what draws this state's diagrams": the host's
+ * `renderDiagram`, else the built-in Mermaid through the state's loader, else
+ * nothing (null — a fence stays a code block). The same object for the same
+ * renderer, so its renders are cached once.
+ */
+export function diagramDrawerOf(state: EditorState): DiagramDrawer | null {
+  const host = environmentOf(state).renderDiagram;
+  if (host) {
+    let d = hosted.get(host);
+    if (!d) hosted.set(host, (d = hostDrawer(host)));
+    return d;
+  }
+  const load = state.facet(mermaidLoader);
+  return load ? mermaidDrawer(load) : null;
+}
+
+/** The built-in Mermaid's drawer for a loader (one per loader). */
+export function mermaidDrawer(load: MermaidLoader): DiagramDrawer {
+  let d = builtIn.get(load);
+  if (!d) builtIn.set(load, (d = builtInDrawer(load)));
+  return d;
+}
+
+// How a diagram is drawn — our Mermaid config, the sanitising, a host's SVG
+// adopted into the profile — lives in `./mermaidRender.ts`, loaded with the
+// first diagram (change: editor-lean-deps): an editor that never draws one
+// never carries it.
+const renderCode = () => import("./mermaidRender");
+
+function builtInDrawer(load: MermaidLoader): DiagramDrawer {
+  let mermaid: MermaidModule | null = null;
+  let code: typeof import("./mermaidRender") | null = null;
+  return {
+    id: BUILT_IN,
+    ready: () =>
+      loadMermaid(load).then((m) =>
+        (mermaid = m) === null ? false : renderCode().then((c) => ((code = c), true)),
+      ),
+    render: (body, scheme) => code!.renderWith(mermaid!, body, scheme),
+    loadFailed: mermaidLoadFailed,
+  };
+}
+
+/**
+ * A host's renderer: no load of ours; its SVG is brought inside the diagram
+ * profile and vetted exactly as Mermaid's own (`normalizeDiagram`, then the
+ * one sink `mermaidMarkup`), so an injected renderer cannot put anything in
+ * the page the built-in one could not.
+ */
+function hostDrawer(render: DiagramRenderer): DiagramDrawer {
+  return {
+    id: `host-${++hostSeq}`,
+    ready: () => Promise.resolve(true),
+    render: (body, scheme) =>
+      Promise.resolve()
+        .then(() => Promise.all([render(body, scheme), renderCode()]))
+        .then(([drawing, code]) => code.hostDiagram(String(drawing))),
+    loadFailed: () => false,
+  };
 }
 
 // --- Lazy load + serialized render -------------------------------------------
@@ -245,7 +286,9 @@ export function measureMermaidStep(step: "render" | "sanitize" | "insert", start
   return end;
 }
 
+/** The next diagram root id (`om-mermaid-N`), one sequence for every renderer. */
 let seq = 0;
+export const nextDiagramId = (): string => `om-mermaid-${++seq}`;
 /** Our renders, one at a time (they share mermaid's global config). */
 let queue: Promise<unknown> = Promise.resolve();
 
@@ -275,87 +318,6 @@ export function setFrameScheduler(fn?: FrameScheduler): void {
 }
 
 /**
- * Render `body` with our config, leaving mermaid's site config as we found it.
- * Resolves to the sanitised SVG, or rejects with mermaid's own error or the
- * sanitiser's refusal.
- */
-export function renderWith(mermaid: MermaidModule, body: string, scheme: ColorScheme): Promise<SafeMarkup> {
-  const before = mermaid.mermaidAPI.getSiteConfig();
-  mermaid.initialize(mermaidConfig(scheme));
-  const start = performance.now();
-  return mermaid.mermaidAPI
-    .render(`om-mermaid-${++seq}`, body)
-    .then(
-      // Through the editor's one HTML sink (`./markup.ts`): anything outside the
-      // diagram profile throws here and the diagram falls back to its source.
-      (r) => {
-        const laidOut = measureMermaidStep("render", start);
-        const svg = mermaidMarkup(normalizeDiagram(r.svg));
-        measureMermaidStep("sanitize", laidOut);
-        return svg;
-      },
-      (e: unknown) => {
-        throw new Error(mermaidReason(e));
-      },
-    )
-    .finally(() => mermaid.initialize(before));
-}
-
-/**
- * Bring mermaid's own output inside the diagram profile before it is vetted
- * (design D9, D10) — by dropping declarations, never adding anything:
- *   - mermaid's themes carry rules for HTML it does not draw here (tooltips,
- *     popup menus: `position: absolute`, `z-index`, `margin`), and a document's
- *     `classDef` / `style` statements can ask for `position: fixed` or a
- *     viewport-sized box. Every declaration outside `DIAGRAM_CSS_PROPERTIES`
- *     (or failing `diagramDeclarationProblem`) is dropped, in the `<style>` and
- *     in `style` attributes alike — such a request is neutralised, the diagram
- *     still draws;
- *   - the dark theme paints with `url(#<id>-gradient)` in every diagram, but
- *     only some types define that gradient; a `url()` to an id the SVG does not
- *     define is dropped (it points at nothing).
- * A mistake here can only make `mermaidMarkup` refuse a diagram, never let
- * anything through: the result is still vetted in full.
- */
-export function normalizeDiagram(diagram: string): string {
-  const ids = new Set([...diagram.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]));
-  const root = /\sid="([^"]+)"/.exec(diagram); // mermaid writes the root svg first, its id first
-  const scope = "#" + (root ? root[1] : "");
-  const keep = (body: string, onRoot: boolean) =>
-    body
-      .split(";")
-      .filter((decl) => {
-        const colon = decl.indexOf(":");
-        if (colon < 1) return decl.trim() === "";
-        const value = decl.slice(colon + 1);
-        const dangling = [...value.matchAll(/url\(\s*#([\w-]+)\s*\)/g)].some((m) => !ids.has(m[1]));
-        return !dangling && diagramDeclarationProblem(decl.slice(0, colon), value, onRoot) === null;
-      })
-      .join(";");
-  const rootOnly = (prelude: string) =>
-    prelude.split(",").some((sel) => sel.trim().startsWith(scope) && /^[^\s>+~&]*$/.test(sel.trim().slice(scope.length)));
-  return diagram
-    .replace(/(<style[^>]*>)([\s\S]*?)(<\/style>)/g, (_all, open: string, css: string, close: string) =>
-      open + css.replace(/([^{}]*)\{([^{}]*)\}/g, (_r, prelude: string, body: string) => `${prelude}{${keep(body, rootOnly(prelude))}}`) + close,
-    )
-    .replace(/(\sstyle=")([^"]*)(")/g, (_all, open: string, body: string, close: string) => open + keep(body, false) + close);
-}
-
-/**
- * Mermaid's parse errors are several lines: "Parse error on line N:", the
- * offending line, a caret line, then "Expecting …, got …". The hover shows one
- * line (`failureReason`), so keep the first and the last — where, and what.
- * Rewording only: the error is re-thrown, never swallowed.
- */
-export function mermaidReason(e: unknown): string {
-  const text = e instanceof Error ? e.message : String(e);
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-  if (lines.length < 2) return lines[0] ?? text;
-  const reason = `${lines[0]} ${lines[lines.length - 1]}`;
-  return reason.length > 200 ? `${reason.slice(0, 199)}…` : reason;
-}
-
-/**
  * Ask for (body, scheme) to be rendered. Once it has — rendered or failed —
  * `done` runs (asynchronously) so the caller can redraw. Already cached: nothing
  * to do. Already in flight: `done` joins its waiters. A failed load calls every
@@ -370,11 +332,11 @@ export function mermaidReason(e: unknown): string {
 export function requestMermaid(
   body: string,
   scheme: ColorScheme,
-  load: MermaidLoader,
+  drawer: DiagramDrawer,
   done: () => void,
   wanted: () => boolean,
 ): void {
-  const key = cacheKey(body, scheme);
+  const key = cacheKey(body, scheme, drawer.id);
   if (cache.has(key)) return;
   const waiting = inflight.get(key);
   if (waiting) {
@@ -384,8 +346,7 @@ export function requestMermaid(
   const waiters = new Map([[done, wanted]]);
   inflight.set(key, waiters);
   queue = queue.then(async () => {
-    const mermaid = await loadMermaid(load);
-    if (!mermaid) {
+    if (!(await drawer.ready())) {
       // The load failed: tell the waiters, whose placeholders become source.
       inflight.delete(key);
       for (const fn of waiters.keys()) queueMicrotask(fn);
@@ -406,8 +367,8 @@ export function requestMermaid(
       }
     }
     // Still in `inflight` while it renders: a request arriving now joins and hears.
-    const result = await attemptRenderAsync(() => renderWith(mermaid, body, scheme));
-    rememberMermaid(body, scheme, result);
+    const result = await attemptRenderAsync(() => drawer.render(body, scheme));
+    rememberMermaid(body, scheme, result, drawer.id);
     inflight.delete(key);
     // Outside the chain: a waiter that throws must not stall the renders queued after it.
     for (const fn of waiters.keys()) queueMicrotask(fn);

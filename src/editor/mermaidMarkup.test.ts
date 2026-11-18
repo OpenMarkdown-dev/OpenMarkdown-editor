@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { attemptRenderAsync } from "./blocks/render";
-import { mermaidMarkup, UnsafeMarkupError, vetDiagramCss } from "./markup";
-import { mermaidConfig, normalizeDiagram, renderWith, type MermaidModule } from "./mermaid";
+import { mermaidMarkup, vetDiagramCss } from "./diagramMarkup";
+import { UnsafeMarkupError } from "./markup";
+import type { MermaidModule } from "./mermaid";
+import { mermaidConfig, normalizeDiagram, renderWith } from "./mermaidRender";
 
 /**
  * The mermaid profile of the editor's one HTML sink (change: editor-mermaid,

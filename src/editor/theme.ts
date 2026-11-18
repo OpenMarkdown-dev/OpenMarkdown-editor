@@ -6,7 +6,7 @@ import { tags as t } from "@lezer/highlight";
 import { zoomed } from "./contentZoom";
 import { insetStyles } from "./insets/decorate";
 import { COVERED_ATTR, HOST_CLASS, HOST_INLINE_CLASS, LANDING_ATTR } from "./selectionPaint";
-import { TABLE_CELL_BOX, TYPE_SCALE, editorTokenDefaults, headingType } from "./tokens";
+import { AUTO_HEIGHT_CLASS, TABLE_CELL_BOX, TYPE_SCALE, editorTokenDefaults, headingType } from "./tokens";
 import { editorStyleBase } from "./primitives";
 
 /**
@@ -152,12 +152,13 @@ export const editorLayoutTheme = EditorView.theme({
     height: "100%",
     // The content zoom's editor share (spec: UI 缩放; ./contentZoom.ts): every
     // size inside the document is in em, so this one root size scales it all.
-    fontSize: zoomed(TYPE_SCALE.body.fontSize),
+    // The size itself is a token (`--ome-font-size`, default TYPE_SCALE's).
+    fontSize: zoomed("var(--ome-font-size)"),
   },
   "& > .cm-scroller": {
     // The prose stack is a token (its default and CJK fallbacks: ./tokens.ts).
     fontFamily: "var(--ome-font)",
-    lineHeight: TYPE_SCALE.body.lineHeight,
+    lineHeight: "var(--ome-line-height)",
     // Horizontal breathing room lives on the SCROLLER, not `.cm-content`
     // (change: selection-highlight-text-column; spec: live-preview-editor / 选区高亮
     // 限定在文本列内). drawSelection measures the selection block from `.cm-content`'s
@@ -174,7 +175,8 @@ export const editorLayoutTheme = EditorView.theme({
     // directions have OPPOSITE homes and neither may follow the other: horizontal
     // here (or the selection block paints past the text), vertical there (or the
     // blank below the text isn't clickable).
-    padding: "0 2.5rem",
+    // The width is a token (`--ome-padding-x`, default 2.5rem).
+    padding: "0 var(--ome-padding-x)",
   },
   "& > .cm-scroller > .cm-content": {
     // Pure text column = former visible width (46rem − 2×2.5rem). maxWidth retuned
@@ -184,7 +186,8 @@ export const editorLayoutTheme = EditorView.theme({
     // scroller pad reproduces the old inset. Only the box drawSelection tracks
     // shrinks — from padded box to text column — which is the whole fix.
     // Scales with the content zoom so a line keeps its measure (./contentZoom.ts).
-    maxWidth: zoomed(TYPE_SCALE.measure),
+    // The measure is a token (`--ome-content-width`, default TYPE_SCALE's).
+    maxWidth: zoomed("var(--ome-content-width)"),
     margin: "0 auto",
     // Zero horizontal (moved to the scroller, see above) — keep it at 0 so no padding
     // re-inflates the box the selection layer measures.
@@ -208,9 +211,23 @@ export const editorLayoutTheme = EditorView.theme({
     // Horizontal blank (outside the 41rem column) stays dead by design: widening this
     // box would regress 选区高亮限定在文本列内 — `rectanglesForRange` reads only
     // `contentRect.left/right`, which is exactly why the vertical move is safe.
-    padding: "2rem 0 40vh",
+    // The top is a token (`--ome-padding-y`); the 40vh below lets the last
+    // line scroll up to reading height in a fixed-height editor. An editor
+    // that grows with its content has nothing to scroll: see AUTO_HEIGHT.
+    padding: "var(--ome-padding-y) 0 40vh",
     caretColor: "var(--ome-fg)",
   },
+  // `height: "auto"` (spec: editor-host / 编辑器可随内容长高; change:
+  // editor-style-contract, design D4): the root takes its content's height
+  // instead of its parent's, and the bottom space is the top's, not 40vh.
+  // A host `min-height` on `.ome-root` passes down to the scroller and the
+  // content box (`inherit`: CodeMirror's own `min-height: 100%` resolves
+  // against an auto height, i.e. not at all), so the blank under a short
+  // document is content and takes clicks — CodeMirror listens on `.cm-content`
+  // only (see the padding note above).
+  [`&.${AUTO_HEIGHT_CLASS}`]: { height: "auto" },
+  [`&.${AUTO_HEIGHT_CLASS} > .cm-scroller`]: { height: "auto", minHeight: "inherit" },
+  [`&.${AUTO_HEIGHT_CLASS} > .cm-scroller > .cm-content`]: { minHeight: "inherit", paddingBottom: "var(--ome-padding-y)" },
 });
 
 /**

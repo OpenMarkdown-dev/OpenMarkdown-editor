@@ -5,16 +5,15 @@ import {
   CACHE_LIMIT,
   diagramSize,
   isLargeDiagram,
+  diagramDrawerOf,
   mermaidFence,
-  mermaidLoadFailed,
-  mermaidLoader,
   requestMermaid,
   shownMermaid,
 } from "../mermaid";
 import { editorTextButton } from "../controls";
 import { editorString } from "../strings";
 import { MermaidWidget } from "../widgets";
-import type { ColorScheme } from "../environment";
+import { ownEnvironment, type ColorScheme } from "../environment";
 import { mapBlockStart } from "./pending";
 import { isRevealed } from "./reveal";
 import { asyncRenderDone, type PendingContent, pending } from "./render";
@@ -118,19 +117,19 @@ export class MermaidRequests {
   constructor(private readonly redraw: () => void) {}
 
   request(state: EditorState, viewport: { from: number; to: number }): void {
-    // No loader (the diagram-free entry, or a test state): nothing to ask for.
-    const load = state.facet(mermaidLoader);
-    if (!load) return;
+    // No drawer (no built-in Mermaid and no host renderer): nothing to ask for.
+    const drawer = diagramDrawerOf(state);
+    if (!drawer) return;
     const scheme = schemeOf(state);
     const bodies = drawnMermaidBodies(state, viewport);
-    const wanted = new Set(bodies.map((b) => `${scheme}\n${b}`));
+    const wanted = new Set(bodies.map((b) => `${drawer.id}\n${scheme}\n${b}`));
     this.wanted = wanted;
     const done = () => {
       if (this.alive) this.redraw();
     };
     for (const body of bodies) {
-      const key = `${scheme}\n${body}`;
-      requestMermaid(body, scheme, load, done, () => this.alive && this.wanted.has(key));
+      const key = `${drawer.id}\n${scheme}\n${body}`;
+      requestMermaid(body, scheme, drawer, done, () => this.alive && this.wanted.has(key));
     }
   }
 
@@ -204,7 +203,9 @@ export function driverShouldRequest(u: Pick<ViewUpdate, "docChanged" | "selectio
     u.selectionSet ||
     treeChanged(u) ||
     u.startState.facet(EditorView.darkTheme) !== u.state.facet(EditorView.darkTheme) ||
-    u.startState.field(askedDiagrams, false) !== u.state.field(askedDiagrams, false)
+    u.startState.field(askedDiagrams, false) !== u.state.field(askedDiagrams, false) ||
+    // A new renderer (`setEnvironment`) draws everything afresh.
+    u.startState.facet(ownEnvironment) !== u.state.facet(ownEnvironment)
   );
 }
 
@@ -222,13 +223,14 @@ export const mermaidEntry: BlockEntry = {
   widget: (state, node, range) => {
     const fence = mermaidFence(state, node);
     if (!fence) return null;
-    const out = shownMermaid(fence.body, schemeOf(state));
+    const drawer = diagramDrawerOf(state);
+    const out = shownMermaid(fence.body, schemeOf(state), drawer?.id);
     // A loader that resolved nothing ("source") leaves the fence a code block.
     if (out?.kind === "source") return null;
     // Nothing yet: the placeholder — unless no render can come (mermaid's load
-    // failed, or this state has no loader and nothing cached): source, unmarked.
+    // failed, or this state has no drawer and nothing cached): source, unmarked.
     if (!out || out.kind === "pending") {
-      if (mermaidLoadFailed() || !state.facet(mermaidLoader)) return null;
+      if (!drawer || drawer.loadFailed()) return null;
       // Large: the hint until the user asks, then "Rendering…" (design D4).
       if (waitsForUser(state, fence)) return pending({ content: largeDiagramHint(fence.from, fence.body) });
       return pending(isLargeDiagram(fence.body) ? { content: RENDERING } : {});

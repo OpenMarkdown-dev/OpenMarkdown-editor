@@ -1,3 +1,7 @@
+import { mathLoader } from "./math";
+import { mermaidLoader } from "./mermaid";
+import { importMermaid } from "./mermaidImport";
+import { importTemml } from "./mathImport";
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -9,7 +13,7 @@ import { BLOCKS } from "./blocks/registry";
 import { blockDecorationField } from "./blocks/field";
 import { dialectBase, dialectExtensions } from "./dialectParser";
 import { ensureMath } from "./math";
-import { mermaidMarkup } from "./markup";
+import { mermaidMarkup } from "./diagramMarkup";
 import { rememberMermaid } from "./mermaid";
 import { livePreviewConfig } from "./previewConfig";
 import { coveredBySelection, SelectableWidget, withSelectedState } from "./selectionPaint";
@@ -147,6 +151,9 @@ function readingState(doc: string, extra: Extension = []): EditorState {
       extensions: [
         markdown({ base: dialectBase, extensions: dialectExtensions, addKeymap: false }),
         livePreviewConfig.of({ revealOnSelection: false, resolveImage: (s: string) => s }),
+        // The built-in renderers, as the full entry's states carry them.
+        mathLoader.of(importTemml),
+        mermaidLoader.of(importMermaid),
         blockDecorationField,
         extra,
       ],
@@ -224,7 +231,7 @@ describe("selection-paint gate", () => {
   });
 
   it("S3: every registry A / B block carries the shared selected state", async () => {
-    await new Promise<void>((resolve) => ensureMath(resolve));
+    await new Promise<void>((resolve) => ensureMath(importTemml, resolve));
     seedAsyncRenders();
     const problems: string[] = [];
     for (const b of BLOCKS.filter((b) => b.mode !== "C")) problems.push(...(await blockProblems(b.id)));

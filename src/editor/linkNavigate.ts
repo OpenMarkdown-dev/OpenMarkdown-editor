@@ -24,7 +24,7 @@ import { livePreviewConfig } from "./previewConfig";
 import { resolveLinkTarget } from "./linkResolve";
 import { findFragmentHeading } from "./outline";
 import { navigateTo } from "./caret";
-import { editorEnvironment } from "./environment";
+import { environmentOf } from "./environment";
 
 /** Classify a link target and route by kind (spec: 链接点击导航). */
 export function followLink(view: EditorView, href: string) {
@@ -35,7 +35,7 @@ export function followLink(view: EditorView, href: string) {
       // Scheme URL → the host's external open (spec: editor-host; the app's
       // is the one external-open funnel, whose scheme policy decides open /
       // confirm / refuse — spec: external-open). No host: nothing happens.
-      void editorEnvironment().openExternal?.(target.url);
+      void environmentOf(view.state).openExternal?.(target.url);
       break;
     case "anchor": {
       // Same-document heading (by text or GitHub-style slug) → a user
@@ -57,7 +57,7 @@ export function followLink(view: EditorView, href: string) {
     case "blocked":
       // Script-capable URL → never opened, never handed to `openExternal`
       // (spec: editor-host / 不可信内容渲染不执行脚本); the host may only say so.
-      void editorEnvironment().refusedLink?.(target.url, target.scheme);
+      void environmentOf(view.state).refusedLink?.(target.url, target.scheme);
       break;
   }
 }

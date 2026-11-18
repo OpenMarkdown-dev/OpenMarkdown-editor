@@ -1,6 +1,6 @@
 {
   "name": "@openmarkdown-dev/editor",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "A live-preview Markdown editor on CodeMirror 6 that edits the Markdown source itself, for a lossless round-trip: open and save without editing, and the file is byte-for-byte what it was.",
   "license": "MIT",
   "type": "module",
@@ -15,6 +15,16 @@
       "import": "./dist/no-diagrams.js",
       "default": "./dist/no-diagrams.js"
     },
+    "./no-renderers": {
+      "types": "./dist/no-renderers.d.ts",
+      "import": "./dist/no-renderers.js",
+      "default": "./dist/no-renderers.js"
+    },
+    "./browser": {
+      "types": "./dist/no-diagrams.d.ts",
+      "import": "./dist/browser.js",
+      "default": "./dist/browser.js"
+    },
     "./package.json": "./package.json"
   },
   "main": "./dist/index.js",
@@ -26,7 +36,12 @@
     "dist/index.d.ts",
     "dist/no-diagrams.js",
     "dist/no-diagrams.d.ts",
-    "dist/editor.js"
+    "dist/no-renderers.js",
+    "dist/no-renderers.d.ts",
+    "dist/editor.js",
+    "dist/math.js",
+    "dist/diagram.js",
+    "dist/browser.js"
   ],
   "keywords": [
     "markdown",
@@ -56,17 +71,18 @@
   "peerDependencies": {
     "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/commands": "^6.10.4",
+    "@codemirror/lang-html": "^6.4.11",
     "@codemirror/lang-markdown": "^6.5.0",
     "@codemirror/language": "^6.12.4",
-    "@codemirror/language-data": "^6.5.2",
     "@codemirror/search": "^6.7.1",
     "@codemirror/state": "^6.7.0",
     "@codemirror/view": "^6.43.4",
+    "@lezer/common": "^1.5.2",
     "@lezer/highlight": "^1.2.3",
     "@lezer/markdown": "^1.6.4"
   },
   "dependencies": {
-    "mermaid": "11.17.2",
+    "mermaid": "^11.17.2",
     "temml": "^0.11.11"
   },
   "scripts": {
@@ -76,7 +92,6 @@
     "update-api": "node build.mjs --update-api"
   },
   "devDependencies": {
-    "@lezer/common": "^1.5.2",
     "@types/node": "^26.1.0",
     "rollup": "^4.62.2",
     "rollup-plugin-dts": "6.4.1",

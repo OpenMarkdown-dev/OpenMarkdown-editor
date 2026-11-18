@@ -18,8 +18,9 @@ import { MONO_FONT_FAMILY } from "@/lib/fonts";
  * editor environment's `colorScheme` through CM's own `&light` / `&dark`
  * classes. They are declared on the OUTERMOST editor's root under `:where()`,
  * at specificity zero, so:
- *   - a host overrides a token by declaring it on `.cm-editor` (any selector
- *     beats zero) — the app maps its semantic tokens there (index.css), which
+ *   - a host overrides a token by declaring it on the root, `.ome-root` (any
+ *     selector beats zero) — the app maps its semantic tokens on `.cm-editor`
+ *     (index.css; same values in a nested editor, so harmless there), which
  *     is how the app keeps ONE source for every value it renders;
  *   - a nested editor (a table cell being edited) declares nothing and
  *     inherits its outer editor's values, so it never shows the light
@@ -27,7 +28,7 @@ import { MONO_FONT_FAMILY } from "@/lib/fonts";
  *     own).
  * A token set on an ANCESTOR of the editor (`:root`) does not reach it — the
  * root's own default wins over inheritance. That is the stated contract: set
- * tokens on `.cm-editor`.
+ * tokens on `.ome-root` (EDITOR_CLASSES below).
  *
  * The defaults MIRROR the app's palette (index.css), so an embedder that sets
  * nothing gets the OpenMarkdown look; `tokens.test.ts` holds every mapped
@@ -36,6 +37,36 @@ import { MONO_FONT_FAMILY } from "@/lib/fonts";
  */
 
 type TokenValue = string | { light: string; dark: string };
+
+/**
+ * THE TYPE SCALE — the document's sizes, the one table the editor's theme and
+ * the rendered-HTML stylesheet both read (change: render-export; spec:
+ * render-style / 样式只有一个来源). Moved here from `theme.ts` so an exported
+ * document and the editor cannot drift: `theme.ts` builds its heading styles,
+ * body size, line height, text column and code size from these entries, and
+ * `render/renderStyle.ts` writes the same numbers into its CSS.
+ *
+ * Sizes inside the document are in `em` (they follow the body size, which the
+ * editor zooms); the body size and the column width are the only absolute
+ * lengths.
+ */
+export const TYPE_SCALE = {
+  body: { fontSize: "16px", lineHeight: "1.7" },
+  /** The text column (the editor's `.cm-content` max-width). */
+  measure: "41rem",
+  /** Code type size (inline and fenced): `theme.ts` CODE_TYPE. */
+  code: { fontSize: "0.9em" },
+  /** h1 … h6. `muted` = drawn in `--ome-muted-fg` (h6). */
+  headings: [
+    { fontSize: "1.8em", fontWeight: "700", lineHeight: "1.3", muted: false },
+    { fontSize: "1.5em", fontWeight: "700", lineHeight: "1.3", muted: false },
+    { fontSize: "1.25em", fontWeight: "700", lineHeight: null, muted: false },
+    { fontSize: null, fontWeight: "700", lineHeight: null, muted: false },
+    { fontSize: "0.9em", fontWeight: "700", lineHeight: null, muted: false },
+    { fontSize: "0.85em", fontWeight: "700", lineHeight: null, muted: true },
+  ],
+} as const;
+
 
 /** Every token: role → default (one value, or a light and a dark one). */
 export const EDITOR_TOKENS = {
@@ -93,36 +124,27 @@ export const EDITOR_TOKENS = {
   "syntax-function": "oklch(0.58 0.08 235)",
   "syntax-type": "oklch(0.6 0.1 204)",
   "syntax-property": "oklch(0.6 0.06 232)",
+  /*
+   * Layout and type (change: editor-style-contract, design D3): every visual
+   * knob of the document, so a host fits the editor to its page with tokens
+   * alone ("fit the host page" in the theming guide). Defaults are the
+   * OpenMarkdown look, read from TYPE_SCALE (the sizes the exported document
+   * shares) — one value each. A token set to `inherit` on the root resolves to
+   * nothing (no ancestor declares it), so the property it feeds falls back to
+   * its own inheritance: the page's font, size, line height and ink. That is
+   * the documented way to take the host's value.
+   */
+  /** The document's body size at the editor's root; every size inside is in em. */
+  "font-size": TYPE_SCALE.body.fontSize,
+  /** The body line height. */
+  "line-height": TYPE_SCALE.body.lineHeight,
+  /** The text column's maximum width (`100%`: as wide as the editor). */
+  "content-width": TYPE_SCALE.measure,
+  /** Space between the editor's left / right edge and the text column. */
+  "padding-x": "2.5rem",
+  /** Space above the first line (and, with `height: "auto"`, below the last). */
+  "padding-y": "2rem",
 } as const satisfies Record<string, TokenValue>;
-
-/**
- * THE TYPE SCALE — the document's sizes, the one table the editor's theme and
- * the rendered-HTML stylesheet both read (change: render-export; spec:
- * render-style / 样式只有一个来源). Moved here from `theme.ts` so an exported
- * document and the editor cannot drift: `theme.ts` builds its heading styles,
- * body size, line height, text column and code size from these entries, and
- * `render/renderStyle.ts` writes the same numbers into its CSS.
- *
- * Sizes inside the document are in `em` (they follow the body size, which the
- * editor zooms); the body size and the column width are the only absolute
- * lengths.
- */
-export const TYPE_SCALE = {
-  body: { fontSize: "16px", lineHeight: "1.7" },
-  /** The text column (the editor's `.cm-content` max-width). */
-  measure: "41rem",
-  /** Code type size (inline and fenced): `theme.ts` CODE_TYPE. */
-  code: { fontSize: "0.9em" },
-  /** h1 … h6. `muted` = drawn in `--ome-muted-fg` (h6). */
-  headings: [
-    { fontSize: "1.8em", fontWeight: "700", lineHeight: "1.3", muted: false },
-    { fontSize: "1.5em", fontWeight: "700", lineHeight: "1.3", muted: false },
-    { fontSize: "1.25em", fontWeight: "700", lineHeight: null, muted: false },
-    { fontSize: null, fontWeight: "700", lineHeight: null, muted: false },
-    { fontSize: "0.9em", fontWeight: "700", lineHeight: null, muted: false },
-    { fontSize: "0.85em", fontWeight: "700", lineHeight: null, muted: true },
-  ],
-} as const;
 
 /**
  * The table cell's box — ONE definition the editor theme (`.om-table th, .om-table
@@ -171,8 +193,47 @@ function declarations(scheme: "light" | "dark"): Record<string, string> {
   return out;
 }
 
+/**
+ * THE PUBLIC STYLING HOOKS — the classes a host may select on, the one
+ * definition (spec: editor-host / 宿主选择器只有两个稳定的类; change:
+ * editor-style-contract, design D1). Every editor root is a `.cm-editor`,
+ * including the small editors nested inside a block while one of its parts is
+ * edited (a table cell, a property value), so a host rule on `.cm-editor`
+ * also lands in a cell — the 500px table row of the Decap trial. Hence:
+ *
+ *   root    the editor `mountEditor` builds (`base.ts` installs it with every
+ *           state `createEditorState` makes) — where tokens and host layout go;
+ *   nested  every editor nested inside a block (`blocks/nested.ts`) — never
+ *           also `root`, so a rule on `.ome-root` cannot reach it.
+ *
+ * The root also carries `data-ome-scheme` (SCHEME_ATTRIBUTE). Nothing else in
+ * the DOM is public. Gate: `styleContract.test.ts` (the classes land where
+ * stated, the docs name exactly these) and the consumer smoke (real DOM).
+ */
+export const EDITOR_CLASSES = { root: "ome-root", nested: "ome-nested" } as const;
+
+/** Every state `createEditorState` builds: its view's root is the public `.ome-root`. */
+export const rootClass = EditorView.editorAttributes.of({ class: EDITOR_CLASSES.root });
+
+/** Every nested editor (`nestedEditorBase()`): its root is `.ome-nested`. */
+export const nestedClass = EditorView.editorAttributes.of({ class: EDITOR_CLASSES.nested });
+
+/**
+ * How tall the editor is (`EditorStateOptions.height`; spec: editor-host /
+ * 编辑器可随内容长高). `"fill"`: its parent's height, scrolling inside it.
+ * `"auto"`: its content's height — the editor grows as text is added and the
+ * page scrolls. A state option, not a public class: the class below is
+ * internal, styled in `theme.ts` (`editorLayoutTheme`).
+ */
+export type EditorHeight = "fill" | "auto";
+export const AUTO_HEIGHT_CLASS = "om-auto-height";
+
+/** The root's class for a height (none for the default). */
+export const heightExtension = (height: EditorHeight | undefined) =>
+  height === "auto" ? EditorView.editorAttributes.of({ class: AUTO_HEIGHT_CLASS }) : [];
+
 /** The outermost editor only: a nested one inherits its outer editor's values. */
-const OUTERMOST = ":not(.cm-editor .cm-editor)";
+const OUTERMOST = `.${EDITOR_CLASSES.root}`;
 
 /**
  * The defaults, declared on the outermost editor's root at specificity zero
@@ -190,7 +251,7 @@ export const TOKEN_DEFAULT_SELECTORS = {
  * outermost editor's root is painted with `--ome-bg` and inked with `--ome-fg`,
  * so a host that overrides those two tokens changes the surface without
  * writing `background` / `color` itself. Zero specificity, like the defaults:
- * any host rule on `.cm-editor` wins. A nested editor (a table cell being
+ * any host rule on `.ome-root` wins. A nested editor (a table cell being
  * edited) paints nothing — it sits on its cell's own surface and inherits ink.
  * In the app the tokens map to `--background` / `--foreground` (index.css), the
  * ground the editor already sat on, so the app does not change.
@@ -207,7 +268,7 @@ export const editorTokenDefaults = EditorView.baseTheme({
  * The scheme, as a stable attribute on the editor's root (spec: editor-host /
  * 根元素带稳定的明暗属性; change: editor-integration-fixes, design D1):
  * `data-ome-scheme="light" | "dark"`, the ONE selector a host keys per-scheme
- * token values on (`.cm-editor[data-ome-scheme="dark"] { … }`). CodeMirror's
+ * token values on (`.ome-root[data-ome-scheme="dark"] { … }`). CodeMirror's
  * own light / dark marker is a generated class name (`&dark` compiles to `ͼ…`),
  * not something a host can write; there is no `cm-light` / `cm-dark`.
  *

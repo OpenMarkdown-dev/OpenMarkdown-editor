@@ -1,15 +1,22 @@
 import {
   Annotation,
-  EditorSelection,
   EditorState,
   MapMode,
   StateEffect,
   StateField,
   type Extension,
+  type TransactionSpec,
 } from "@codemirror/state";
 import { isolateHistory } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
-import { cellSourceRange, parseTable, posAfterReflow, reflowChangeIfNeeded } from "./tableEdit";
+import {
+  applyTableChanges,
+  cellSourceRange,
+  locateCell,
+  parseTable,
+  settleCellsChange,
+  type TableChange,
+} from "./tableEdit";
 import { tableRangeAt } from "./tableCommands";
 import { lineAfterBlock } from "./blocks/geometry";
 
@@ -25,14 +32,15 @@ import { lineAfterBlock } from "./blocks/geometry";
  *     a part editor (`blocks/partEditor.ts`) while keeping the rest of the grid rendered, and keys its `eq`
  *     on it so per-keystroke sync transactions DON'T tear the widget down
  *     (preserving focus + IME; design D3).
- *   - `tableReflowOnEditEnd` — column re-alignment is DEFERRED to session end
- *     (spec: 离开时自动对齐 / 不逐键重排). Fires when the edit session leaves a
- *     table (activeEdit → null or a different table), appending a canonical reflow
- *     to that same transaction — atomic, idempotent (no change / no autosave /
- *     no empty undo when already aligned). Replaces the old selection-based
- *     `tableReflowOnLeave` trigger (the caret no longer enters table source).
+ *   - `tableSettleOnEditEnd` — when the edit session leaves a table (activeEdit →
+ *     null or a different table), the cells it wrote are settled in the table's
+ *     own style, in that same transaction (spec: editor-fidelity N1; change:
+ *     editor-edit-locality): an aligned table gets those cells' padding back to
+ *     the column width, widening a column only when an edited cell no longer
+ *     fits; a compact table, unaligned rows and untouched cells are left as
+ *     written; a session that changed nothing writes nothing. Never per keystroke.
  *   - `exitEditOnOutsideClick` — a mousedown anywhere outside a table ends the
- *     session (commit is already live; reflow rides the same clear). Clicks on a
+ *     session (commit is already live; the settle rides the same clear). Clicks on a
  *     table cell are left to the widget's own handler (enter / switch cell).
  */
 
@@ -66,6 +74,17 @@ export interface ActiveEdit extends ActiveEditTarget {
    * the field and stomp the caret mid-word.
    */
   epoch: number;
+  /**
+   * Where this session's own typing landed (doc offsets inside the cells it wrote,
+   * mapped through every later change), across cell switches within the table.
+   * The settle on leaving reads which cells these fall in (change:
+   * editor-edit-locality). Cleared when the session moves to another table, or
+   * when a transaction that switches cells also changes the document (a
+   * structural command, Tab past the last cell): those settle first, then write.
+   */
+  touched: readonly number[];
+  /** The table's text before this session's first keystroke (null: nothing typed yet). */
+  origin: string | null;
 }
 
 /** Set (or clear, with null) the active in-place cell edit. */
@@ -83,10 +102,32 @@ export const activeEditField = StateField.define<ActiveEdit | null>({
         // Epoch carries ACROSS a cell switch rather than resetting: leaving a cell
         // and coming back to it after a foreign change must not reproduce the
         // widget's previous identity, or `eq` would reuse the stale DOM.
-        next = e.value ? { ...e.value, epoch: value?.epoch ?? 0 } : null;
+        // The touched cells carry across a plain switch within the same table.
+        const keep = !!value && !!e.value && e.value.tableFrom === value.tableFrom && !tr.docChanged;
+        next = e.value
+          ? {
+              ...e.value,
+              epoch: value?.epoch ?? 0,
+              touched: keep ? value!.touched : [],
+              origin: keep ? value!.origin : null,
+            }
+          : null;
       }
     }
     if (!next || !tr.docChanged) return next;
+    let touched = next.touched.map((p) => tr.changes.mapPos(p, 1));
+    let origin = next.origin;
+    if (tr.annotation(cellSync)) {
+      if (origin === null) {
+        const range = tableRangeAt(tr.startState, next.tableFrom);
+        origin = range ? tr.startState.sliceDoc(range.from, range.to) : "";
+      }
+      let at: number | null = null;
+      tr.changes.iterChangedRanges((_fA, _tA, fromB) => {
+        if (at === null) at = fromB;
+      });
+      if (at !== null) touched = [...touched, at];
+    }
     // Keep pointing at the same table when edits above shift it. Cell edits sit
     // after tableFrom, so this is a no-op for the common in-cell case; it only
     // matters when an external/agent edit lands earlier in the doc. TrackDel: if
@@ -95,7 +136,7 @@ export const activeEditField = StateField.define<ActiveEdit | null>({
     // With a MapMode, mapPos returns null (NOT -1) for a deleted position.
     const tableFrom = tr.changes.mapPos(next.tableFrom, -1, MapMode.TrackDel);
     if (tableFrom === null) return null;
-    return { ...next, tableFrom, epoch: next.epoch + (tr.annotation(cellSync) ? 0 : 1) };
+    return { ...next, tableFrom, touched, origin, epoch: next.epoch + (tr.annotation(cellSync) ? 0 : 1) };
   },
 });
 
@@ -116,11 +157,60 @@ export const isolateHistoryOnSessionChange: Extension = EditorState.transactionF
 });
 
 /**
- * Reflow the table an edit session just left (design D2 / spec: 结束编辑会话时
- * 自动对齐). A transactionFilter so the reflow rides the very transaction that
- * clears / switches `activeEdit` — atomic, idempotent, readOnly-exempt.
+ * The settle a session owes the table it is editing: padding-only changes for
+ * the cells it wrote (`settleCellsChange`), in the current document. Empty when
+ * nothing is owed — no session, nothing typed, a read-only state, or the table
+ * back to the bytes it had before the first keystroke (a session that changed
+ * nothing writes nothing, spec: editor-fidelity / 不编辑不改字节).
+ *
+ * A transaction that both switches cells and changes the document (a structural
+ * command, Tab / Enter past the last cell) resets the session's record, so its
+ * dispatcher applies this first and computes its own change on the settled text
+ * (`withPendingSettle`).
  */
-export const tableReflowOnEditEnd: Extension = EditorState.transactionFilter.of((tr) => {
+export function pendingSettle(state: EditorState): TableChange[] {
+  const edit = state.field(activeEditField, false);
+  if (!edit || !edit.touched.length || state.readOnly) return [];
+  const range = tableRangeAt(state, edit.tableFrom);
+  if (!range) return [];
+  const text = state.sliceDoc(range.from, range.to);
+  if (text === edit.origin) return [];
+  const p = parseTable(text, range.from);
+  if (!p) return [];
+  const cells = edit.touched
+    .filter((pos) => pos >= range.from && pos <= range.to)
+    .map((pos) => locateCell(p, pos));
+  return settleCellsChange(text, range.from, cells, edit.origin);
+}
+
+/**
+ * Settle the open session's cells, then the caller's change on the settled
+ * table, as ONE transaction (one undo step): `build` gets the table text and
+ * its start after the settle and returns the spec to dispatch, its changes in
+ * those coordinates; null cancels.
+ */
+export function withPendingSettle(
+  view: EditorView,
+  range: { from: number; to: number },
+  build: (text: string, from: number) => TransactionSpec | null,
+): boolean {
+  const settle = pendingSettle(view.state);
+  const text = view.state.sliceDoc(range.from, range.to);
+  const spec = build(settle.length ? applyTableChanges(text, range.from, settle) : text, range.from);
+  if (!spec) return false;
+  if (!settle.length) view.dispatch(spec);
+  else view.dispatch({ changes: settle }, { ...spec, sequential: true });
+  return true;
+}
+
+/**
+ * Settle the table an edit session just left (spec: editor-fidelity N1; change:
+ * editor-edit-locality). A transactionFilter so the settle rides the very
+ * transaction that clears / switches `activeEdit` — atomic, readOnly-exempt,
+ * and nothing at all when there is nothing to settle (no empty change, no
+ * autosave, no empty undo step).
+ */
+export const tableSettleOnEditEnd: Extension = EditorState.transactionFilter.of((tr) => {
   let leaving = false;
   let next: ActiveEditTarget | null = null;
   for (const e of tr.effects) {
@@ -131,31 +221,19 @@ export const tableReflowOnEditEnd: Extension = EditorState.transactionFilter.of(
   }
   if (!leaving) return tr;
   const prev = tr.startState.field(activeEditField, false);
-  if (!prev) return tr; // wasn't editing → nothing to reflow
+  if (!prev) return tr; // wasn't editing → nothing to settle
   if (next && next.tableFrom === prev.tableFrom) return tr; // staying in the same table (cell nav)
-  if (tr.startState.readOnly) return tr;
-  const range = tableRangeAt(tr.startState, prev.tableFrom);
-  if (!range) return tr;
-  const reflow = reflowChangeIfNeeded(tr.startState.sliceDoc(range.from, range.to), range.from);
-  if (!reflow) return tr; // already canonical — no empty change / no autosave churn
+  // A transaction that writes its own change while leaving (deleting the last
+  // column) speaks the start document; its dispatcher settles first if needed.
+  if (tr.docChanged) return tr;
+  const settle = pendingSettle(tr.startState);
+  if (!settle.length) return tr;
   // `"input"` deliberately, not `CELL_SYNC_USER_EVENT`: history does not join a
-  // bare `"input"`, and the reflow should stay its own undo step rather than merge
-  // with the typing that preceded it (change: table-cell-edit-undo).
-  // A transaction that names its own landing inside the table (Find closing
-  // the cell keeps the caret there, caret.ts `findTookKeys`) keeps it in the
-  // same cell: the reflow replaces the whole table, which would map it to the
-  // table's start. Only when this transaction changes nothing itself, so its
-  // selection speaks the document the reflow is computed on.
-  if (tr.selection && !tr.docChanged) {
-    const text = tr.startState.sliceDoc(range.from, range.to);
-    const map = (p: number) => posAfterReflow(text, range.from, reflow, p);
-    const selection = EditorSelection.create(
-      tr.selection.ranges.map((r) => EditorSelection.range(map(r.anchor), map(r.head))),
-      tr.selection.mainIndex,
-    );
-    return [tr, { changes: reflow, selection, userEvent: "input", sequential: true }];
-  }
-  return [tr, { changes: reflow, userEvent: "input" }];
+  // bare `"input"`, and the settle should stay its own undo step rather than merge
+  // with the typing that preceded it (change: table-cell-edit-undo). The changes
+  // are padding only, so a selection this transaction names (Find closing the
+  // cell keeps the caret in it, caret.ts `findTookKeys`) maps through unmoved.
+  return [tr, { changes: settle, userEvent: "input", sequential: true }];
 });
 
 /**
@@ -199,7 +277,7 @@ export const tableCaret: Extension = EditorState.transactionFilter.of((tr) => {
 /**
  * End the edit session when the user clicks outside any table. Clicks landing on
  * a table cell / its input are left alone — the widget's own mousedown enters or
- * switches the cell (and cross-table switches reflow via the filter above). The
+ * switches the cell (and cross-table switches settle via the filter above). The
  * clear is not consumed, so the click still drops the caret where it landed.
  */
 export const exitEditOnOutsideClick: Extension = EditorView.domEventHandlers({
@@ -216,7 +294,7 @@ export const exitEditOnOutsideClick: Extension = EditorView.domEventHandlers({
 
 /**
  * End an in-place cell edit, through the same exit a click outside the table
- * takes (reflow included). The tab switch calls it before parking a state
+ * takes (settle included). The tab switch calls it before parking a state
  * (change: tab-state): the nested cell editor's DOM goes with the view update,
  * so a parked state must not still say "editing".
  */
@@ -227,7 +305,7 @@ export function endInlineEdit(view: EditorView): void {
 export const tableInlineEdit: Extension = [
   activeEditField,
   isolateHistoryOnSessionChange,
-  tableReflowOnEditEnd,
+  tableSettleOnEditEnd,
   tableCaret,
   exitEditOnOutsideClick,
 ];

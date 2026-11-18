@@ -1,4 +1,6 @@
 import { createEditorState, mountEditor } from "@openmarkdown-dev/editor";
+// Optional: highlighted code blocks in ~100 languages. Install it beside the editor.
+import { languages } from "@codemirror/language-data";
 
 const doc = `# Tables, diagrams and math
 
@@ -20,7 +22,12 @@ graph LR
   A[Markdown text] --> B[Editor]
   B --> C[Same text, saved]
 \`\`\`
+
+\`\`\`ts
+const answer: number = 42; // highlighted: a language from codeLanguages
+\`\`\`
 `;
 
-// Mermaid and the math renderer load the first time the document needs them.
-mountEditor(document.getElementById("editor")!, createEditorState({ doc }));
+// Mermaid, the math renderer and each code language load the first time the
+// document needs them.
+mountEditor(document.getElementById("editor")!, createEditorState({ doc, codeLanguages: languages }));

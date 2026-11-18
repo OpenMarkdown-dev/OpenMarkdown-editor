@@ -1,8 +1,7 @@
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { codeFolding, foldEffect, foldedRanges } from "@codemirror/language";
 import { withCompleteTree } from "../syntax";
-import { markdown } from "@codemirror/lang-markdown";
-import { dialectBase, dialectExtensions } from "../dialectParser";
+import { markdownSupport } from "../markdownSupport";
 import { STRUCTURE_KEYS, type StructureKey } from "./keys";
 import { listFoldRange, listFoldService } from "../listFold";
 
@@ -140,7 +139,7 @@ export function goldenState(marked: string, readOnly = false, extra: Extension[]
       doc,
       selection: EditorSelection.single(anchor, head),
       extensions: [
-        markdown({ base: dialectBase, extensions: dialectExtensions, addKeymap: false }),
+        markdownSupport(),
         codeFolding(),
         listFoldService,
         EditorState.readOnly.of(readOnly),

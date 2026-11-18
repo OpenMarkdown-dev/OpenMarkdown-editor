@@ -10,6 +10,13 @@
 //
 // The OpenMarkdown app does not use them: it keeps its own Rust-side BOM and
 // line-ending handling. They are for hosts.
+//
+// A host that holds the file as a string (a CMS field, a textarea, a JSON API)
+// uses the text pair, `openMarkdownText` / `saveMarkdownText` (change:
+// editor-per-instance, design D8). Both pairs are one codec: `layoutOf` reads
+// the BOM and the line endings, `isUnedited` decides "unedited", and
+// `serialize` writes an edited document — the bytes pair only adds strict
+// UTF-8 decoding and encoding around them.
 
 /** A line ending as it appears in the file: LF, CRLF, or a lone CR. */
 export type LineEnding = "\n" | "\r\n" | "\r";
@@ -43,6 +50,24 @@ export interface MarkdownFile {
    * Unedited, it is saved as its original bytes, mix included; once edited,
    * every line break is written as `ending`.
    */
+  mixed: boolean;
+}
+
+/**
+ * A Markdown file opened from a string with `openMarkdownText`: the text to
+ * give the editor, plus what `saveMarkdownText` needs to write it back. The
+ * same as `MarkdownFile`, with the original string in place of the bytes.
+ */
+export interface MarkdownText {
+  /** The text to edit: without a leading BOM, every line ending turned into `\n`. */
+  text: string;
+  /** The string as it was passed in. `saveMarkdownText` returns it as it is while the text is unedited. */
+  source: string;
+  /** Whether the string started with a BOM (U+FEFF). An edited save writes it back. */
+  bom: boolean;
+  /** The line ending an edited save writes: the most frequent one; on a tie, the first. `"\n"` with no line break. */
+  ending: LineEnding;
+  /** Whether the string mixes line endings. Unedited, it is saved as it was; once edited, every line break is written as `ending`. */
   mixed: boolean;
 }
 
@@ -83,6 +108,11 @@ export function openMarkdownFile(bytes: Uint8Array): MarkdownFile {
   } catch (cause) {
     throw new InvalidUtf8Error({ cause });
   }
+  return { ...layoutOf(raw), bytes: bytes.slice() };
+}
+
+/** What a decoded file looks like: its text, BOM and line endings. The one reading behind both opens. */
+function layoutOf(raw: string): { text: string; bom: boolean; ending: LineEnding; mixed: boolean } {
   const bom = raw.startsWith(BOM);
   const body = bom ? raw.slice(1) : raw;
 
@@ -101,7 +131,21 @@ export function openMarkdownFile(bytes: Uint8Array): MarkdownFile {
     }
   }
 
-  return { text: body.replace(LINE_BREAK, "\n"), bytes: bytes.slice(), bom, ending, mixed: counts.size > 1 };
+  return { text: body.replace(LINE_BREAK, "\n"), bom, ending, mixed: counts.size > 1 };
+}
+
+/**
+ * Is `doc` the opened file's text, unchanged? THE test behind both saves
+ * returning the original exactly, and `editor.isUnedited` (an unsaved-changes
+ * indicator).
+ */
+export function isUnedited(doc: string, file: { readonly text: string }): boolean {
+  return doc === file.text;
+}
+
+/** An edited document as the file writes it: the BOM put back, every line break as `ending`. */
+function serialize(doc: string, file: { bom: boolean; ending: LineEnding }): string {
+  return (file.bom ? BOM : "") + doc.replace(LINE_BREAK, file.ending);
 }
 
 /**
@@ -115,6 +159,37 @@ export function openMarkdownFile(bytes: Uint8Array): MarkdownFile {
  * @returns The file's bytes.
  */
 export function saveMarkdownFile(doc: string, file: MarkdownFile): Uint8Array {
-  if (doc === file.text) return file.bytes;
-  return new TextEncoder().encode((file.bom ? BOM : "") + doc.replace(LINE_BREAK, file.ending));
+  if (isUnedited(doc, file)) return file.bytes;
+  return new TextEncoder().encode(serialize(doc, file));
+}
+
+/**
+ * Open a Markdown file you hold as a string — a CMS field, a textarea, a JSON
+ * response — for the editor: the same reading as `openMarkdownFile` after
+ * decoding (notes and strips a leading BOM, detects the line endings and turns
+ * them into `\n`), keeping the original string. Save with `saveMarkdownText`.
+ * If you decode bytes yourself, decode with `ignoreBOM: true` (a default
+ * `TextDecoder` drops the BOM before this sees it), or use
+ * `openMarkdownFile` on the bytes instead.
+ *
+ * @param source The file's content as a string.
+ * @returns The text to edit, and what saving needs to write the string back.
+ */
+export function openMarkdownText(source: string): MarkdownText {
+  return { ...layoutOf(source), source };
+}
+
+/**
+ * The string to store for the editor's document. Unedited (`doc` equals
+ * `file.text`), it is the original string, exactly. Edited, it is `doc` with
+ * the original BOM put back and every line break written as `file.ending` —
+ * the same text `saveMarkdownFile` encodes.
+ *
+ * @param doc The document to save, usually `editor.getDoc()`.
+ * @param file What `openMarkdownText` returned for this string.
+ * @returns The string to store.
+ */
+export function saveMarkdownText(doc: string, file: MarkdownText): string {
+  if (isUnedited(doc, file)) return file.source;
+  return serialize(doc, file);
 }

@@ -2,11 +2,11 @@ import { Annotation, EditorSelection, EditorState, Prec, Transaction } from "@co
 import { EditorView, keymap } from "@codemirror/view";
 import { standardKeymap } from "@codemirror/commands";
 import { openSearchPanel } from "@codemirror/search";
-import { markdown } from "@codemirror/lang-markdown";
-import { dialectBase, dialectExtensions } from "../dialectParser";
+import { markdownSupport } from "../markdownSupport";
 import { livePreviewConfig } from "../previewConfig";
 import { markdownHighlighting } from "../theme";
 import { nestedEditorBase, nestedPreview } from "./nested";
+import { ownEnvironment } from "../environment";
 import { scrollBoxIntoView } from "../caret";
 
 /**
@@ -125,9 +125,13 @@ export function buildPartEditor(
         // browser, the page's own find over a half-typed cell.
         keymap.of(partFindKeymap(outer)),
         nestedEditorBase(),
+        // The outer editor's own environment (change: editor-per-instance, D1):
+        // a link followed, a code copied or a word checked in a part behaves as
+        // in its document.
+        ownEnvironment.of(outer.state.facet(ownEnvironment)),
         // No markdown keymap: a part's Enter / Backspace are standardKeymap's
         // (spec: structure-input — the body's structure keys stay out of blocks).
-        markdown({ base: dialectBase, extensions: dialectExtensions, addKeymap: false }),
+        markdownSupport(),
         outer.state.facet(nestedPreview),
         livePreviewConfig.of({ ...outer.state.facet(livePreviewConfig), revealOnSelection: true }),
         markdownHighlighting,

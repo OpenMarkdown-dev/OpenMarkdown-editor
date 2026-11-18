@@ -180,7 +180,11 @@ describe("parseInlineSegments", () => {
 describe("a cell formula before the converter loads (change: render-placeholder-size)", () => {
   it("is pending — the placeholder — not its TeX (this file never loads the converter)", async () => {
     const { cellFormula } = await import("./inlineCell");
-    expect(cellFormula("$ax^2 + bx + c = 0$")).toEqual({ kind: "pending" });
+    const { mathLoader } = await import("./math");
+    const { importTemml } = await import("./mathImport");
+    const { EditorState } = await import("@codemirror/state");
+    const state = EditorState.create({ extensions: mathLoader.of(importTemml) });
+    expect(cellFormula(state, "$ax^2 + bx + c = 0$")).toEqual({ kind: "pending" });
   });
 });
 

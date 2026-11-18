@@ -22,6 +22,7 @@ import { relativePath } from "./relativePath";
  */
 
 type SaveAttachment = NonNullable<EditorHost["saveAttachment"]>;
+type UploadImage = NonNullable<EditorHost["uploadImage"]>;
 type NotifyUnsupported = NonNullable<EditorHost["onUnsupportedPaste"]>;
 type UnsupportedPasteReason = Parameters<NotifyUnsupported>[0];
 
@@ -85,14 +86,29 @@ function droppedImages(data: DataTransfer | null): File[] {
   return Array.from(data.files).filter(isImageFile);
 }
 
+/** The host's two ways to store an image (`EditorHost`), read at paste / drop time. */
+export interface ImageSavers {
+  saveAttachment?: SaveAttachment;
+  uploadImage?: UploadImage;
+}
+
+/** Where a pasted image goes: a store to call, or why there is none. */
+export type ImageStore =
+  | { store: (bytes: Uint8Array, hint: string | null) => Promise<string | null> }
+  | { missing: UnsupportedPasteReason };
+
 /**
- * Why images cannot be stored here, or null when they can. Pure (unit-tested).
- * A missing `saveAttachment` is named first: it is the one a host can fix.
+ * THE rule for where a pasted / dropped image is stored (change:
+ * editor-per-instance, design D6). Pure (unit-tested). Beside the document
+ * (`saveAttachment`) when it has a path; else wherever the host keeps images
+ * (`uploadImage`); else nowhere, with the reason the host can fix named first
+ * (no saver at all → `"no-save-attachment"`).
  */
-export function unsupportedPasteReason(docPath: string | null, save: SaveAttachment | undefined): UnsupportedPasteReason | null {
-  if (!save) return "no-save-attachment";
-  if (!docPath) return "no-doc-path";
-  return null;
+export function imageStoreFor(docPath: string | null, savers: ImageSavers): ImageStore {
+  const { saveAttachment, uploadImage } = savers;
+  if (docPath && saveAttachment) return { store: (bytes, hint) => saveAttachment(docPath, bytes, hint) };
+  if (uploadImage) return { store: uploadImage };
+  return { missing: saveAttachment ? "no-doc-path" : "no-save-attachment" };
 }
 
 /** Exported for tests: the no-capability path returns before touching `view`. */
@@ -100,24 +116,22 @@ export async function storeAndInsert(
   view: EditorView,
   files: File[],
   docPath: string | null,
-  save: SaveAttachment | undefined,
+  savers: ImageSavers,
   pos: number,
   notify?: NotifyUnsupported,
 ): Promise<void> {
-  // Every real document has a path (even the scratch note); a null path only
-  // happens in browser dev with no filesystem — nowhere to put attachments.
   // No host save: nothing is stored or inserted (spec: editor-host / 静默关闭);
   // the host may ask to hear about it (`onUnsupportedPaste`, a notice only).
-  const missing = unsupportedPasteReason(docPath, save);
-  if (missing || !docPath || !save) {
-    if (missing) notify?.(missing, files.length);
+  const where = imageStoreFor(docPath, savers);
+  if ("missing" in where) {
+    notify?.(where.missing, files.length);
     return;
   }
   const rels: string[] = [];
   for (const file of files) {
     const bytes = new Uint8Array(await file.arrayBuffer());
     // A failure is already reported (the save-error path); insert nothing.
-    const rel = await save(docPath, bytes, file.name || file.type || null);
+    const rel = await where.store(bytes, file.name || file.type || null);
     if (rel === null) return;
     rels.push(rel);
   }
@@ -157,12 +171,14 @@ function insertFileLink(
 /**
  * Editor extension adding paste/drop image handling. `docPath` is the open
  * document's absolute path (attachments land beside it); `getSave` reads the
- * host's `saveAttachment` at drop time (absent → the image is swallowed, not
- * stored, and `getNotify`'s `onUnsupportedPaste`, if any, hears why). A write failure is reported by the host's save to its own error path.
+ * host's `saveAttachment` / `uploadImage` at drop time (`imageStoreFor`; none
+ * → the image is swallowed, not stored, and `getNotify`'s
+ * `onUnsupportedPaste`, if any, hears why). A write failure is reported by the
+ * host's save to its own error path.
  */
 export function imagePaste(
   docPath: string | null,
-  getSave: () => SaveAttachment | undefined,
+  getSave: () => ImageSavers,
   getNotify: () => NotifyUnsupported | undefined = () => undefined,
 ) {
   return EditorView.domEventHandlers({

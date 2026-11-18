@@ -1,6 +1,7 @@
 import { renderHTML, type RenderOptions } from "./renderHtml";
 import { DOC_CLASS, renderStylesheet } from "./renderStyle";
 import { ensureMath, isMathReady } from "../math";
+import { importTemml } from "../mathImport";
 import type { SafeMarkup } from "../markup";
 
 /**
@@ -57,7 +58,7 @@ export function mathLoaded(timeoutMs = 10_000): Promise<void> {
   if (isMathReady()) return Promise.resolve();
   return new Promise((resolve) => {
     const timer = setTimeout(resolve, timeoutMs);
-    ensureMath(() => {
+    ensureMath(importTemml, () => {
       clearTimeout(timer);
       resolve();
     });

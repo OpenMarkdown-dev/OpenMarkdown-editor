@@ -91,6 +91,11 @@ function rulerTier(size: ControlSize): Record<string, string> {
   return { height: `${r.px}px`, paddingLeft: `${r.padPx}px`, paddingRight: `${r.padPx}px`, ...typeTier(r.type) };
 }
 
+/** Every element inside a line, at specificity zero (see PRIMITIVE_STYLES). */
+export const INLINE_RESET_SELECTOR = ":where(&) :where(.cm-line *)";
+/** The line-level layout an inline widget must not inherit: the one declaration. */
+export const INLINE_RESET = { textIndent: "0" } as const;
+
 /** The primitives as a style spec (exported so the mirror test reads the rules themselves). */
 export const PRIMITIVE_STYLES: Record<string, Record<string, string>> = {
   // What Tailwind's preflight gives every element in the app, for the
@@ -100,6 +105,21 @@ export const PRIMITIVE_STYLES: Record<string, Record<string, string>> = {
   ":where(&) *, :where(&) *::before, :where(&) *::after": { boxSizing: "border-box" },
   ":where(&) :where(hr)": { height: "0", margin: "0", color: "inherit" },
   ":where(&) :where(table)": { textIndent: "0", borderColor: "inherit" },
+  // THE inline reset (spec: live-preview-editor / 行内部件不继承行级排版; change:
+  // editor-style-contract, design D2): every element inside a line — every
+  // inline widget, mark and control, present and future — starts from zero
+  // text-indent. `text-indent` is the one line-level layout property a line
+  // sets (a list item's hanging first row, `insets/decorate.ts`) that is
+  // INHERITED; a plain inline ignores it, but an atomic inline (inline-block,
+  // inline-flex: inline math, a chip, an image frame, a pending box, the
+  // marker box) is a block container of its own and indents again inside
+  // itself — the math that overlapped the text before it in a list item.
+  // (Padding, borders and backgrounds a line sets are not inherited.) One rule
+  // for every descendant, so no widget can forget it; zero specificity, so a
+  // widget that wants an indent of its own still declares one.
+  // Gate: `inlineReset.gate.test.ts` (one definition) and the consumer smoke
+  // (every atomic inline in a list item computes 0).
+  [INLINE_RESET_SELECTOR]: INLINE_RESET,
 
   // The text column is not a control: a host's generic focus ring (a global
   // `:focus-visible { outline; box-shadow; border-radius }`, specificity

@@ -1,3 +1,5 @@
+import { mathLoader } from "../math";
+import { importTemml } from "../mathImport";
 import { describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
@@ -52,6 +54,8 @@ function state(doc: string, selection: { anchor: number; head?: number }, reveal
       selection,
       extensions: [
         markdown({ base: dialectBase, extensions: dialectExtensions, addKeymap: false }),
+        // Formulas render with the built-in converter, as the full entry's states do.
+        mathLoader.of(importTemml),
         livePreviewConfig.of({ revealOnSelection: reveal, resolveImage: (s: string) => s }),
         blockDecorationField,
       ],
@@ -162,6 +166,7 @@ describe("scheme is part of the remembered key", () => {
         selection: { anchor: 0 },
         extensions: [
           markdown({ base: dialectBase, extensions: dialectExtensions, addKeymap: false }),
+          mathLoader.of(importTemml),
           livePreviewConfig.of({ revealOnSelection: true, resolveImage: (s: string) => s }),
           EditorView.darkTheme.of(true),
           blockDecorationField,

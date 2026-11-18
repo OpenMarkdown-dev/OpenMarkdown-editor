@@ -1,12 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { EditorState, type TransactionSpec } from "@codemirror/state";
 import { history, undo } from "@codemirror/commands";
-import { CELL_SYNC_USER_EVENT } from "./tableEdit";
+import { markdown } from "@codemirror/lang-markdown";
+import { dialectBase, dialectExtensions } from "./dialectParser";
+import { CELL_SYNC_USER_EVENT, cellEditChange, parseTable } from "./tableEdit";
+import { tableRangeAt } from "./tableCommands";
+import { withCompleteTree } from "./syntax";
 import {
   activeEditField,
   cellSync,
   isolateHistoryOnSessionChange,
+  pendingSettle,
   setActiveEdit,
+  tableInlineEdit,
 } from "./tableInlineEdit";
 
 /**
@@ -109,5 +115,65 @@ describe("isolateHistoryOnSessionChange — a cell switch is an undo boundary", 
       if (state === before) break;
     }
     expect(presses).toBe(2);
+  });
+});
+
+describe("tableSettleOnEditEnd — leaving settles only the cells this session wrote (change: editor-edit-locality)", () => {
+  // An aligned table, so a settle has something to do.
+  const ALIGNED = ["# t", "", "| A    | B    |", "| :--- | ---: |", "| 1    | 2    |", "| 3    | 4    |", ""].join("\n");
+  const FROM = ALIGNED.indexOf("| A");
+
+  function session(doc = ALIGNED) {
+    let state = withCompleteTree(
+      EditorState.create({ doc, extensions: [markdown({ base: dialectBase, extensions: dialectExtensions, addKeymap: false }), history(), tableInlineEdit] }),
+    );
+    const apply = (spec: TransactionSpec) => (state = withCompleteTree(state.update(spec).state));
+    const type = (row: number, col: number, text: string) => {
+      const range = tableRangeAt(state, FROM)!;
+      const p = parseTable(state.sliceDoc(range.from, range.to), range.from)!;
+      apply({ changes: cellEditChange(p, row, col, text)!, userEvent: CELL_SYNC_USER_EVENT, annotations: cellSync.of(true) });
+    };
+    return { get state() { return state; }, apply, type };
+  }
+
+  it("records where the session typed and the table before its first keystroke", () => {
+    const s = session();
+    s.apply({ effects: setActiveEdit.of({ tableFrom: FROM, row: 1, col: 0 }) });
+    expect(s.state.field(activeEditField)).toMatchObject({ touched: [], origin: null });
+    s.type(1, 0, "11");
+    const edit = s.state.field(activeEditField)!;
+    expect(edit.touched).toHaveLength(1);
+    expect(edit.origin).toBe(ALIGNED.slice(FROM, ALIGNED.length - 1));
+  });
+
+  it("settles every cell typed in, across cell switches, when the session leaves the table", () => {
+    const s = session();
+    s.apply({ effects: setActiveEdit.of({ tableFrom: FROM, row: 1, col: 0 }) });
+    s.type(1, 0, "1000");
+    s.apply({ effects: setActiveEdit.of({ tableFrom: FROM, row: 2, col: 1 }) });
+    s.type(2, 1, "44");
+    expect(pendingSettle(s.state).length).toBeGreaterThan(0);
+    s.apply({ effects: setActiveEdit.of(null) });
+    expect(s.state.doc.toString()).toBe(ALIGNED.replace("| 1    |", "| 1000 |").replace("| 4    |", "| 44   |"));
+  });
+
+  it("writes nothing for a session that typed nothing, or typed and was undone", () => {
+    const s = session();
+    s.apply({ effects: setActiveEdit.of({ tableFrom: FROM, row: 1, col: 0 }) });
+    s.apply({ effects: setActiveEdit.of(null) });
+    expect(s.state.doc.toString()).toBe(ALIGNED);
+    s.apply({ effects: setActiveEdit.of({ tableFrom: FROM, row: 1, col: 0 }) });
+    s.type(1, 0, "1x");
+    let state = s.state;
+    undo({ state, dispatch: (tr) => void (state = tr.state) });
+    expect(pendingSettle(state)).toEqual([]);
+  });
+
+  it("a transaction that switches cells and changes the document starts a fresh record", () => {
+    const s = session();
+    s.apply({ effects: setActiveEdit.of({ tableFrom: FROM, row: 1, col: 0 }) });
+    s.type(1, 0, "1x");
+    s.apply({ changes: { from: ALIGNED.length - 1, insert: "\n" }, effects: setActiveEdit.of({ tableFrom: FROM, row: 2, col: 0 }) });
+    expect(s.state.field(activeEditField)).toMatchObject({ touched: [], origin: null });
   });
 });

@@ -11,21 +11,21 @@ import {
   CACHE_LIMIT,
   cachedMermaid,
   diagramRendering,
-  mermaidConfig,
   mermaidFence,
   mermaidLoader,
-  mermaidReason,
   type MermaidModule,
   rememberMermaid,
-  renderWith,
   measureMermaidStep,
   MERMAID_MEASURES,
-  requestMermaid,
+  diagramDrawerOf,
+  mermaidDrawer, requestMermaid,
   shownMermaid,
 } from "./mermaid";
-import { mermaidMarkup } from "./markup";
+import { mermaidMarkup } from "./diagramMarkup";
+import { mermaidConfig, mermaidReason, renderWith } from "./mermaidRender";
 import { createEditorState } from ".";
-import { createEditorState as createDiagramFreeState } from "./base";
+import { createEditorState as createDiagramFreeState } from "./noDiagrams";
+import { createEditorState as createRendererFreeState } from "./base";
 import { importMermaid } from "./mermaidImport";
 import { livePreviewConfig } from "./previewConfig";
 import { PendingWidget } from "./blocks/pending";
@@ -33,17 +33,20 @@ import { SelectableWidget } from "./selectionPaint";
 import { MermaidWidget } from "./widgets";
 import { progressiveTree, withCompleteTree } from "./syntax";
 
-function state(doc: string, opts: { reveal?: boolean; dark?: boolean; anchor?: number } = {}, extra: Extension = []) {
+function state(doc: string, opts: { reveal?: boolean; dark?: boolean; anchor?: number; loader?: false } = {}, extra: Extension = []) {
   return withCompleteTree(
     EditorState.create({
       doc,
       selection: { anchor: opts.anchor ?? doc.length },
       extensions: [
+        // First, so a loader the test passes wins over the default below.
+        extra,
         markdown({ base: dialectBase, extensions: dialectExtensions, addKeymap: false }),
         livePreviewConfig.of({ revealOnSelection: opts.reveal ?? true, resolveImage: (s: string) => s }),
+        // Diagrams draw with the built-in Mermaid, as the full entry's states do.
+        opts.loader === false ? [] : mermaidLoader.of(importMermaid),
         EditorView.darkTheme.of(opts.dark ?? false),
         blockDecorationField,
-        extra,
       ],
     }),
   );
@@ -126,7 +129,7 @@ describe("the block field draws what the cache says (spec: block-editing)", () =
   const doc = `para\n\n\`\`\`mermaid\n${body}\n\`\`\`\n\nend\n`;
 
   it("no loader and nothing cached (a test state) → no render can come: source, unmarked", () => {
-    expect(rendered(state(doc.replace("field", "pending")))).toEqual({ blocks: [], failed: [] });
+    expect(rendered(state(doc.replace("field", "pending"), { loader: false }))).toEqual({ blocks: [], failed: [] });
   });
 
   it("nothing yet, a loader there → the one placeholder over the fence (change: render-placeholder-size)", () => {
@@ -168,12 +171,22 @@ describe("the block field draws what the cache says (spec: block-editing)", () =
     expect(rendered(state(doc, {}, diagramRendering.of(true))).blocks).toEqual(["mermaid:A"]);
   });
 
-  it("the diagram-free entry (`./base`, `@openmarkdown-dev/editor/no-diagrams`) has no loader and never renders, whatever `diagrams` says", () => {
+  it("the entries without built-in Mermaid (`/no-diagrams`, `/no-renderers`) have no loader and draw no diagram, whatever `diagrams` says — until the host gives `renderDiagram`", () => {
     rememberMermaid(body, "light", { kind: "rendered", value: svg("") });
-    for (const opts of [{ doc }, { doc, diagrams: true }]) {
-      const s = createDiagramFreeState(opts);
-      expect(s.facet(diagramRendering)).toBe(false);
-      expect(s.facet(mermaidLoader)).toBeNull();
+    for (const create of [createDiagramFreeState, createRendererFreeState]) {
+      for (const opts of [{ doc }, { doc, diagrams: true }]) {
+        const s = create(opts);
+        expect(s.facet(mermaidLoader)).toBeNull();
+        expect(diagramDrawerOf(s)).toBeNull();
+        const seen: unknown[] = [];
+        progressiveTree(withCompleteTree(s)).iterate({ enter: (n) => void (n.name === "FencedCode" && seen.push(mermaidFence(s, n))) });
+        expect(seen).toEqual([null]);
+      }
+      // A host renderer makes the fence a diagram again; `diagrams: false` still wins.
+      const renderDiagram = () => "<svg></svg>";
+      expect(diagramDrawerOf(create({ doc, environment: { renderDiagram } }))?.id).toMatch(/^host-/);
+      const off = create({ doc, diagrams: false, environment: { renderDiagram } });
+      expect(off.facet(diagramRendering)).toBe(false);
     }
     // The full entry installs the one loader.
     expect(createEditorState({ doc }).facet(mermaidLoader)).toBe(importMermaid);
@@ -345,22 +358,22 @@ describe("requestMermaid — a queued render nobody still wants is dropped (desi
     const bodies = ["graph TD\n  q --> 1", "graph TD\n  q --> 12", "graph TD\n  q --> 123"];
     for (const b of bodies) {
       want = b;
-      requestMermaid(b, "light", fakeLoad, () => {}, () => want === b);
+      requestMermaid(b, "light", mermaidDrawer(fakeLoad), () => {}, () => want === b);
     }
     await settle();
     expect(renders).toEqual([bodies[2]]);
     expect(cachedMermaid(bodies[2], "light")?.kind).toBe("rendered");
     expect(cachedMermaid(bodies[0], "light")).toBeUndefined();
     // Dropped is not stuck: asked again (and wanted), it renders.
-    requestMermaid(bodies[0], "light", fakeLoad, () => {}, () => true);
+    requestMermaid(bodies[0], "light", mermaidDrawer(fakeLoad), () => {}, () => true);
     await settle();
     expect(renders).toEqual([bodies[2], bodies[0]]);
   });
 
   it("any waiter still wanting it is enough (another view of the same document)", async () => {
     const b = "graph TD\n  two --> views";
-    requestMermaid(b, "light", fakeLoad, () => {}, () => false);
-    requestMermaid(b, "light", fakeLoad, () => {}, () => true);
+    requestMermaid(b, "light", mermaidDrawer(fakeLoad), () => {}, () => false);
+    requestMermaid(b, "light", mermaidDrawer(fakeLoad), () => {}, () => true);
     await settle();
     expect(renders).toEqual([b]);
   });

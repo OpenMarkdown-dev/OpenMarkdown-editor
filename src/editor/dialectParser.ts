@@ -54,3 +54,13 @@ export const dialectExtensions: MarkdownExtension[] = [
  * a markdown parser is configured: `parser.gate.test.ts` fails on any other.
  */
 export const dialectMarkdownParser: MarkdownParser = (dialectBase.parser as MarkdownParser).configure(dialectExtensions);
+
+/**
+ * The assembled grammar plus how it nests other languages (fenced code, HTML)
+ * — an editor's language parser (`markdownSupport.ts`; change:
+ * editor-lean-deps). The nesting is `@lezer/markdown`'s `parseCode`, which adds
+ * no syntax: the grammar is still exactly `dialectExtensions`.
+ */
+export function dialectParserNesting(nesting: MarkdownExtension): MarkdownParser {
+  return (dialectBase.parser as MarkdownParser).configure([...dialectExtensions, nesting]);
+}

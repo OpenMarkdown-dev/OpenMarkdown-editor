@@ -24,6 +24,7 @@
  */
 
 import type { SyntaxNode } from "@lezer/common";
+import type { EditorState } from "@codemirror/state";
 import { dialectMarkdownParser } from "./dialectParser";
 import { readImageLabel, type ImageLabel } from "./imageAlt";
 import { imageElement } from "./imageElement";
@@ -223,23 +224,32 @@ export function parseInlineSegments(src: string): InlineSegment[] {
 /** Resolve an image path to a loadable URL; null = outside the whitelist (`livePreviewConfig`). */
 type ResolveImage = (src: string) => string | null;
 
+/**
+ * What a cell's formulas render with: its editor's state (whose renderer
+ * draws them — `renderFormula`) and the request to load the built-in one.
+ */
+export interface CellMath {
+  readonly state: EditorState;
+  request(): void;
+}
+
 /** What a cell formula shows — pure, the decision `mathElement` draws (tested in node). */
-export function cellFormula(source: string): RenderResult<SafeMarkup> {
-  return attemptRender(() => renderFormula(mathBody(source), false));
+export function cellFormula(state: EditorState, source: string): RenderResult<SafeMarkup> {
+  return attemptRender(() => renderFormula(state, mathBody(source), false));
 }
 
 /**
  * A cell's inline formula, by the body's rule (spec: 格内行内公式): the converter
- * not loaded yet → the one placeholder, and `requestMath` (the editor loads the
+ * not loaded yet → the one placeholder, and `math.request` (the editor loads the
  * converter and redraws — see `TableWidget.mathState`; change:
  * render-placeholder-size); its load failed → the source, unmarked; TeX it
  * cannot render → the source with the one failure mark, the reason on hover;
  * otherwise the formula.
  */
-function mathElement(source: string, requestMath: () => void): Node {
-  const out = cellFormula(source);
+function mathElement(source: string, math: CellMath): Node {
+  const out = cellFormula(math.state, source);
   if (out.kind === "pending") {
-    requestMath();
+    math.request();
     return pendingElement(source);
   }
   if (out.kind === "source") return document.createTextNode(source);
@@ -333,7 +343,7 @@ function appendMarked(parent: Node, text: string, from: number, paint: Painting)
 }
 
 /** Append segments as DOM under `parent` (thin, no logic — mirrors the segment tree). */
-function appendSegments(parent: Node, segs: InlineSegment[], resolveImage: ResolveImage, requestMath: () => void, paint: Painting): void {
+function appendSegments(parent: Node, segs: InlineSegment[], resolveImage: ResolveImage, math: CellMath, paint: Painting): void {
   for (const s of segs) {
     switch (s.kind) {
       case "text":
@@ -348,25 +358,25 @@ function appendSegments(parent: Node, segs: InlineSegment[], resolveImage: Resol
       }
       case "strong": {
         const el = document.createElement("strong");
-        appendSegments(el, s.children, resolveImage, requestMath, paint);
+        appendSegments(el, s.children, resolveImage, math, paint);
         parent.appendChild(el);
         break;
       }
       case "em": {
         const el = document.createElement("em");
-        appendSegments(el, s.children, resolveImage, requestMath, paint);
+        appendSegments(el, s.children, resolveImage, math, paint);
         parent.appendChild(el);
         break;
       }
       case "strike": {
         // `<s>` is line-through and nothing else — the body's strikethrough style.
         const el = document.createElement("s");
-        appendSegments(el, s.children, resolveImage, requestMath, paint);
+        appendSegments(el, s.children, resolveImage, math, paint);
         parent.appendChild(el);
         break;
       }
       case "math":
-        parent.appendChild(mathElement(s.source, requestMath));
+        parent.appendChild(mathElement(s.source, math));
         break;
       case "link": {
         // Still a <span>, not an <a> — an <a href> would drag in the browser's own
@@ -380,7 +390,7 @@ function appendSegments(parent: Node, segs: InlineSegment[], resolveImage: Resol
         const el = document.createElement("span");
         el.className = "om-link";
         el.dataset.omHref = s.href;
-        if (s.children.length) appendSegments(el, s.children, resolveImage, requestMath, paint);
+        if (s.children.length) appendSegments(el, s.children, resolveImage, math, paint);
         else el.textContent = s.href; // `[](url)` → show the href as visible text
         parent.appendChild(el);
         break;
@@ -401,16 +411,16 @@ function appendSegments(parent: Node, segs: InlineSegment[], resolveImage: Resol
  * markdown styled. Thin wrapper over `parseInlineSegments` — the parse is the
  * tested part; this just maps the tree to elements. `resolveImage` is the
  * editor's own (`livePreviewConfig`), so a cell image loads from where a body
- * image would; `requestMath` asks the editor to load the formula converter.
+ * image would; `math` is the editor's formula renderer and its load request.
  */
 export function renderInlineCell(
   text: string,
   resolveImage: ResolveImage,
-  requestMath: () => void,
+  math: CellMath,
   marks: readonly CellMark[] = [],
 ): DocumentFragment {
   const frag = document.createDocumentFragment();
-  appendSegments(frag, parseInlineSegments(text), resolveImage, requestMath, { marks, display: displayOffsetOf(text) });
+  appendSegments(frag, parseInlineSegments(text), resolveImage, math, { marks, display: displayOffsetOf(text) });
   return frag;
 }
 

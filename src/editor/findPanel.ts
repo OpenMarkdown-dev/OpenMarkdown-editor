@@ -23,9 +23,21 @@ import { editorFieldClasses, editorIconButton, editorTextButton, type EditorGlyp
  * @codemirror/search, wired through `search({ createPanel })` in index.ts.
  */
 
-/** Programmatic entry for the `edit.find` command (appCommands / palette). */
+/** Programmatic entry for the `edit.find` command and `editor.openSearch()`. */
 export function openFindPanel(view: EditorView): void {
   openSearchPanel(view);
+}
+
+/**
+ * THE close: the panel's Esc key and [Esc] keycap, and `editor.closeSearch()`.
+ * Closes the panel, clears match highlights, and hands focus back explicitly —
+ * CM never focuses a non-editable content DOM by itself, so the keyboard would
+ * go dead in reading mode otherwise. Only when the panel was open (a closed
+ * panel's close moves no focus).
+ */
+export function closeFindPanel(view: EditorView): void {
+  if (!closeSearchPanel(view)) return;
+  view.contentDOM.focus({ preventScroll: true });
 }
 
 /**
@@ -61,13 +73,8 @@ export function createFindPanel(view: EditorView): Panel {
   dom.className = "om-find-panel ome-type-label";
 
   // Single close path, shared by the Esc key and the visible [Esc] keycap
-  // (design D1): close the panel, clear match highlights, and hand focus back
-  // explicitly — CM never focuses a non-editable content DOM by itself, so the
-  // keyboard would go dead in reading mode otherwise.
-  function closePanel(): void {
-    closeSearchPanel(view);
-    view.contentDOM.focus({ preventScroll: true });
-  }
+  // (design D1): `closeFindPanel`.
+  const closePanel = () => closeFindPanel(view);
 
   // ——— Find row: input, count, prev/next, case toggle ———
   const findRow = document.createElement("div");

@@ -4,6 +4,7 @@ import { editorMarkTheme, editorStyleFoundation } from "../theme";
 import { imageLoadMeasure } from "../imageElement";
 import { imageResize } from "../imageResize";
 import { spellChecking } from "../spellcheck";
+import { nestedClass } from "../tokens";
 
 /**
  * What every editor nested inside a block starts from (spec: block-editing /
@@ -24,6 +25,9 @@ import { spellChecking } from "../spellcheck";
  *   into the part (change: image-resize, D3).
  * - `spellChecking()`: a part being edited (a table cell) gets squiggles while
  *   its outer editor checks and its place there is prose (change: spellcheck).
+ * - `nestedClass`: its root is the public `.ome-nested`, never `.ome-root`, so
+ *   a host rule on the editor's root cannot reach it (change:
+ *   editor-style-contract, design D1).
  */
 export function nestedEditorBase(): Extension {
   return [
@@ -35,6 +39,7 @@ export function nestedEditorBase(): Extension {
     imageLoadMeasure,
     imageResize,
     spellChecking(),
+    nestedClass,
   ];
 }
 

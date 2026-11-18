@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { EditorState, type Extension } from "@codemirror/state";
@@ -15,7 +15,7 @@ import {
   diagramSize,
   mermaidLoader,
   type MermaidModule,
-  requestMermaid,
+  mermaidDrawer, requestMermaid,
   setFrameScheduler,
 } from "./mermaid";
 import { livePreviewConfig } from "./previewConfig";
@@ -106,6 +106,12 @@ beforeEach(() => {
   setFrameScheduler((go) => go());
 });
 afterEach(() => setFrameScheduler());
+
+// The drawing code (`./mermaidRender.ts`) loads with the first diagram; load it
+// up front so the first test's renders take the same ticks as every later one.
+beforeAll(async () => {
+  await import("./mermaidRender");
+});
 
 describe("the fixture sections sit on the side of N they are named for", () => {
   it("(a)(b)(c) above, (d) just under", () => {
@@ -236,7 +242,7 @@ describe("a large render waits one frame, so 'Rendering…' paints first (design
   it("the render is not called before the frame callback runs", async () => {
     const frames: (() => void)[] = [];
     setFrameScheduler((go) => frames.push(go));
-    requestMermaid(LARGE, "light", fakeLoad, () => {}, () => true);
+    requestMermaid(LARGE, "light", mermaidDrawer(fakeLoad), () => {}, () => true);
     await settle();
     await settle();
     expect(frames).toHaveLength(1);
@@ -252,7 +258,7 @@ describe("a large render waits one frame, so 'Rendering…' paints first (design
     const body = fresh(LARGE);
     let still = true;
     let heard = 0;
-    requestMermaid(body, "light", fakeLoad, () => heard++, () => still);
+    requestMermaid(body, "light", mermaidDrawer(fakeLoad), () => heard++, () => still);
     await settle();
     await settle();
     expect(frames).toHaveLength(1);
@@ -266,7 +272,7 @@ describe("a large render waits one frame, so 'Rendering…' paints first (design
   it("a diagram under N does not wait for a frame", async () => {
     const frames: (() => void)[] = [];
     setFrameScheduler((go) => frames.push(go));
-    requestMermaid(UNDER, "dark", fakeLoad, () => {}, () => true);
+    requestMermaid(UNDER, "dark", mermaidDrawer(fakeLoad), () => {}, () => true);
     await settle();
     await settle();
     expect(frames).toHaveLength(0);

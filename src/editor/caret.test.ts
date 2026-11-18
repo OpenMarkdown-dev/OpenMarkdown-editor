@@ -12,7 +12,7 @@ import { Decoration, EditorView } from "@codemirror/view";
 import { LANDING_CLASS, landingIn, livePreview } from "./livePreview";
 import { tableEntryAt, tableMarks } from "./blocks/table";
 import { cellSourceRange, parseTable } from "./tableEdit";
-import { activeEditField, setActiveEdit, tableInlineEdit } from "./tableInlineEdit";
+import { activeEditField, cellSync, setActiveEdit, tableInlineEdit } from "./tableInlineEdit";
 import { activePropField, propAt, propertiesState, parsePropsOf, setActiveProp } from "./blocks/properties";
 
 /**
@@ -203,9 +203,9 @@ describe("table cell enter / exit caret (caret-rules R8 / R8a)", () => {
     s = s.update({ effects: setActiveEdit.of({ tableFrom: from, row: 1, col: 0 }) }).state;
     expect(s.field(activeEditField)).not.toBeNull();
     s = s.update({ effects: setActiveEdit.of(null) }).state;
-    // Leaving also re-aligns the table (`- ` → `---`): read the landing in the result.
-    expect(s.doc.toString()).not.toBe(TABLE);
-    expect(at(s)).toBe(s.doc.toString().indexOf("\n\nafter") + 1);
+    // Nothing was typed, so leaving writes nothing (change: editor-edit-locality).
+    expect(s.doc.toString()).toBe(TABLE);
+    expect(at(s)).toBe(TABLE.indexOf("\n\nafter") + 1);
   });
 
   it("ending the edit with the caret elsewhere leaves it there", () => {
@@ -265,6 +265,11 @@ describe("R2c · a caret stranded inside a B block re-enters it (strandedIn)", (
     expect(hit).not.toBeNull();
     expect(hit!.block.id).toBe("table");
     expect(hit!.pos).toBe(blank + 1);
+  });
+
+  it("nothing is stranded in a read-only document (Reading mode opens no part)", () => {
+    expect(strandedIn(live(DOC, 3))?.block.id).toBe("table");
+    expect(strandedIn(live(DOC, 3, EditorState.readOnly.of(true)))).toBeNull();
   });
 
   it("a caret on the table's END edge is stranded too (drawn after the widget, it would type on the next line)", () => {
@@ -445,10 +450,13 @@ describe("L2 · nearestDelta (the landing scroll)", () => {
 });
 
 describe("R2c · opening Find closes an open part (the table then paints every match)", () => {
-  // Not aligned: leaving a cell re-aligns the table, and the caret keeps its cell.
-  const TABLE = "| one | two |\n| - | - |\n| the | 2 |";
+  // Aligned, its first column right-justified: shortening `theXX` to `the` in
+  // the open cell makes leaving re-pad that cell on its LEFT (change:
+  // editor-edit-locality), and the caret keeps its cell and its offset in it.
+  const TABLE = "|   one | two |\n| ----: | --- |\n| theXX | 2   |";
   const DOC = `${TABLE}\n\nthe end\n`;
   const the = DOC.indexOf("the");
+  const typed = DOC.replace("theXX", "the");
 
   /** Run a search command (as the keymap / the Find command do) on a state. */
   function run(cmd: typeof openSearchPanel, state: EditorState): EditorState {
@@ -465,7 +473,10 @@ describe("R2c · opening Find closes an open part (the table then paints every m
   };
 
   const inCell = () =>
-    live(DOC, 0, search()).update({ effects: setActiveEdit.of({ tableFrom: 0, row: 1, col: 0 }), selection: { anchor: the + 1 } }).state;
+    live(DOC, 0, search())
+      .update({ effects: setActiveEdit.of({ tableFrom: 0, row: 1, col: 0 }) })
+      .state.update({ changes: { from: the, to: the + 5, insert: "the" }, userEvent: "input.type", annotations: cellSync.of(true) })
+      .state.update({ selection: { anchor: the + 1 } }).state;
 
   it("ends the open cell edit when the panel opens", () => {
     const before = inCell();
@@ -475,8 +486,9 @@ describe("R2c · opening Find closes an open part (the table then paints every m
     const closed = after.update(close!).state;
     expect(closed.field(activeEditField)).toBeNull();
     // The caret stays in the same cell, at the same offset (an ordinary exit puts
-    // it after the table), though the table was re-aligned around it.
-    expect(closed.doc.toString()).not.toBe(before.doc.toString());
+    // it after the table), though the cell was re-padded around it.
+    expect(before.doc.toString()).toBe(typed);
+    expect(closed.doc.toString()).toBe(typed.replace("| the |", "|   the |"));
     const head = closed.selection.main.head;
     const cell = cellSourceRange(parseTable(closed.sliceDoc(0, closed.doc.lineAt(head).to), 0)!, 1, 0)!;
     expect(head - cell.from).toBe(before.selection.main.head - the);

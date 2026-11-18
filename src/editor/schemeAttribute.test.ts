@@ -5,7 +5,7 @@ import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { createEditorState } from ".";
 import { configureEditorEnvironment, type ColorScheme } from "./environment";
-import { ROOT_PAINT_SELECTOR, SCHEME_ATTRIBUTE, schemeAttribute, schemeAttributes } from "./tokens";
+import { EDITOR_CLASSES, ROOT_PAINT_SELECTOR, SCHEME_ATTRIBUTE, schemeAttribute, schemeAttributes } from "./tokens";
 
 /**
  * The root's scheme attribute (spec: editor-host / 根元素带稳定的明暗属性; change:
@@ -52,7 +52,7 @@ describe("data-ome-scheme", () => {
 describe("root paint", () => {
   it("is the outermost root, at zero specificity", () => {
     expect(ROOT_PAINT_SELECTOR.startsWith(":where(&")).toBe(true);
-    expect(ROOT_PAINT_SELECTOR).toContain(":not(.cm-editor .cm-editor)");
+    expect(ROOT_PAINT_SELECTOR).toContain(`.${EDITOR_CLASSES.root})`);
   });
 });
 
@@ -66,7 +66,7 @@ describe("the theming guide", () => {
 
   it("keys light and dark on data-ome-scheme, never on a class CodeMirror does not add", () => {
     expect(guide).not.toMatch(/cm-light|cm-dark/);
-    expect(guide).toContain(`.cm-editor[${SCHEME_ATTRIBUTE}="light"]`);
-    expect(guide).toContain(`.cm-editor[${SCHEME_ATTRIBUTE}="dark"]`);
+    expect(guide).toContain(`.${EDITOR_CLASSES.root}[${SCHEME_ATTRIBUTE}="light"]`);
+    expect(guide).toContain(`.${EDITOR_CLASSES.root}[${SCHEME_ATTRIBUTE}="dark"]`);
   });
 });

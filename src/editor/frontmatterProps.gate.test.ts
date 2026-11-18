@@ -85,7 +85,7 @@ const RULES: Rule[] = [
       "editor/frontmatterProps.ts": "the one property writing (writeScalar / newPropertyLine)",
       "editor/skill.ts": "the Properties block as ONE display line for plain copy (`k: v · k: v`), never written to a file",
       "editor/render/renderStyle.ts": "CSS declarations (`prop: value;`), not frontmatter",
-      "editor/markup.ts": "an error message naming a selector, not frontmatter",
+      "editor/diagramMarkup.ts": "an error message naming a selector, not frontmatter",
     },
   },
 ];

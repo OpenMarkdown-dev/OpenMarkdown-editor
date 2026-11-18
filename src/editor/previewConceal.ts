@@ -32,6 +32,16 @@ export const FORMATTING_MARKS = new Set([
   "QuoteMark",
 ]);
 
+/**
+ * The part of a backslash escape (`\*`) live preview hides: the backslash, which
+ * is markup like `**` — hidden when the selection does not touch the escape,
+ * always in reading mode; the escaped character stays (change: editor-dialect).
+ * Plain copy drops the same range.
+ */
+export function escapeMark(escape: { from: number; to: number }): { from: number; to: number } {
+  return { from: escape.from, to: escape.from + 1 };
+}
+
 /** Visible stand-in for an unordered list marker (`BulletWidget`). */
 export const BULLET_GLYPH = "•";
 

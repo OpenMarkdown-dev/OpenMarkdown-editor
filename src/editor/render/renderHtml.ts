@@ -4,7 +4,7 @@ import { calloutTitle, parseCallout } from "../callout";
 import { readImageLabel } from "../imageAlt";
 import { githubSlugs } from "../headingSlug";
 import { matchAgentTokens } from "../agentMention";
-import { renderMath } from "../math";
+import { mathBody, renderMath } from "../math";
 import { MERMAID_INFO } from "../mermaid";
 import { parseProps } from "../frontmatterProps";
 import { isRemoteSrc } from "../imageResolve";
@@ -377,8 +377,7 @@ class Renderer {
 
   private blockMath(node: SyntaxNode): string {
     const source = this.text(node);
-    const tex = source.trim().replace(/^\$\$/, "").replace(/\$\$$/, "").trim();
-    const drawn = this.mathOf(tex, true);
+    const drawn = this.mathOf(mathBody(source), true);
     if (drawn) return `<div class="om-math-block">${drawn}</div>\n`;
     return `<pre class="om-math-source"><code>${esc(source)}</code></pre>\n`;
   }
@@ -475,8 +474,7 @@ class Renderer {
       }
       case "InlineMath": {
         const source = this.text(node);
-        const tex = source.replace(/^\$+/, "").replace(/\$+$/, "").trim();
-        const drawn = this.mathOf(tex, false);
+        const drawn = this.mathOf(mathBody(source), false);
         return drawn ? `<span class="om-math">${drawn}</span>` : `<code class="om-math-source">${esc(source)}</code>`;
       }
       case "Link":

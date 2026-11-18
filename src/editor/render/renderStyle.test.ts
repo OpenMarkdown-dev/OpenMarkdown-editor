@@ -32,9 +32,12 @@ describe("render stylesheet", () => {
   });
 
   it("takes every font size and line height from the type scale", () => {
+    // The body's are the layout tokens, whose defaults ARE the scale's body entries.
+    expect(tokenDefault("font-size", "light")).toBe(TYPE_SCALE.body.fontSize);
+    expect(tokenDefault("line-height", "light")).toBe(TYPE_SCALE.body.lineHeight);
     const scale = new Set<string>([
-      TYPE_SCALE.body.fontSize,
-      TYPE_SCALE.body.lineHeight,
+      "var(--ome-font-size)",
+      "var(--ome-line-height)",
       TYPE_SCALE.code.fontSize,
       ...TYPE_SCALE.headings.flatMap((h): string[] => [h.fontSize, h.lineHeight].filter((x): x is NonNullable<typeof x> => x !== null)),
     ]);

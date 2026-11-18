@@ -6,7 +6,8 @@ const uploaded = new Map<string, string>();
 let n = 0;
 
 const host: EditorHost = {
-  async saveAttachment(_docPath, bytes, hint) {
+  // The document has no path (a CMS field, say): the image goes wherever you keep images.
+  async uploadImage(bytes, hint) {
     const name = `uploads/${++n}-${(hint ?? "image").replace(/[^\w.-]+/g, "-")}`;
     uploaded.set(name, URL.createObjectURL(new Blob([bytes.slice()])));
     const li = document.createElement("li");
@@ -22,8 +23,8 @@ mountEditor(
   document.getElementById("editor")!,
   createEditorState({
     doc: "# Paste an image\n\nCopy a screenshot and paste it here, or drop an image file. Drag its corner to resize.\n\n",
-    // A document path turns paste / drop on: attachments are named relative to it.
-    docPath: "/notes/example.md",
+    // No `docPath`: `uploadImage` needs none. (A document with a path can use
+    // `saveAttachment` instead, to store the image beside it.)
     host,
   }),
 );

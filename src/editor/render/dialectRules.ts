@@ -25,6 +25,10 @@ export const DIALECT_RENDER: Record<string, DialectRender> = {
     never: /<(?:blockquote|p)>\s*\[!tip\]\+/,
   },
   math: { where: "Renderer.inlineNode InlineMath / Renderer.blockMath", shows: /<span class="om-math"><math/ },
+  "math-tex-delimiters": {
+    where: "Renderer.inlineNode InlineMath / Renderer.blockMath (the grammar reads `\\(…\\)` / `\\[…\\]`)",
+    shows: /<span class="om-math"><math[^]*<div class="om-math-block"><math/,
+  },
   "agent-mention": { where: "Renderer.textRun", shows: /<span class="om-agent">@agent\(reviewer\)<\/span>/ },
   frontmatter: { where: "Renderer.frontmatter", shows: /<table class="om-props">/ },
   "image-size": { where: "Renderer.link (image)", shows: /<img src="[^"]+" alt="方块" width="120" height="60">/ },

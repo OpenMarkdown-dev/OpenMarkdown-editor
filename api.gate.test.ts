@@ -54,17 +54,31 @@ describe.each(snapshots)("editor package API surface (%s entry)", (name, snapsho
     const committed = readFileSync(join(__dirname, snapshot), "utf8");
     const values = /^export \{ ([^}]*) \};$/m.exec(committed)?.[1].split(", ") ?? [];
     const types = /^export type \{ ([^}]*) \};$/m.exec(committed)?.[1].split(", ") ?? [];
-    expect(values).toEqual(["InvalidUtf8Error", "configureEditorEnvironment", "createEditorState", "mountEditor", "openMarkdownFile", "saveMarkdownFile"]);
+    expect(values).toEqual([
+      "InvalidUtf8Error",
+      "configureEditorEnvironment",
+      "createEditorState",
+      "mountEditor",
+      "openMarkdownFile",
+      "openMarkdownText",
+      "saveMarkdownFile",
+      "saveMarkdownText",
+    ]);
     expect(types).toEqual([
       "ColorScheme",
+      "ColorSchemeSource",
+      "DiagramRenderer",
       "EditorEnvironment",
       "EditorHost",
       "EditorLang",
       "EditorMode",
+      "EditorOwnEnvironment",
       "EditorStateOptions",
       "LineEnding",
       "MarkdownEditor",
       "MarkdownFile",
+      "MarkdownText",
+      "MathRenderer",
       "OutlineItem",
       "SpellMiss",
       "SpellService",

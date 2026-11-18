@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildHtmlDocument, mathLoaded } from "./document";
-import { mermaidMarkup } from "../markup";
+import { mermaidMarkup } from "../diagramMarkup";
 
 const md = [
   "# Plan",

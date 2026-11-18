@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { InvalidUtf8Error, openMarkdownFile, saveMarkdownFile, type MarkdownFile } from "./fileBytes";
+import { InvalidUtf8Error, openMarkdownFile, openMarkdownText, saveMarkdownFile, saveMarkdownText, type MarkdownFile } from "./fileBytes";
 
 // spec: editor-package / 随包提供文件字节适配器 (change: editor-integration-fixes, D4).
 
@@ -152,5 +152,46 @@ describe("saveMarkdownFile, edited", () => {
   it("is UTF-8", () => {
     const f: MarkdownFile = openMarkdownFile(enc("x\n"));
     expect([...saveMarkdownFile("é\n", f)]).toEqual([0xc3, 0xa9, 0x0a]);
+  });
+});
+
+// change: editor-per-instance, design D8 (finding #32) — the text pair is the
+// same codec as the bytes pair, for a host that holds the file as a string.
+describe("openMarkdownText / saveMarkdownText", () => {
+  const cases: [string, string][] = [
+    ["LF", "# A\n\nb\n"],
+    ["CRLF", "# A\r\n\r\nb\r\n"],
+    ["lone CR", "# A\r\rb\r"],
+    ["BOM + CRLF", `${BOM}# A\r\nb\r\n`],
+    ["BOM + mixed", `${BOM}a\nb\r\nc\rd\r\n`],
+    ["mixed tie", "a\r\nb\nc"],
+    ["no final newline", "a\r\nb"],
+    ["empty", ""],
+    ["BOM only", BOM],
+    ["NFD", "café\r\n"],
+    ["inner U+FEFF", `a${BOM}b\n`],
+  ];
+
+  it.each(cases)("%s: reads the string as openMarkdownFile reads its bytes", (_n, s) => {
+    const { bytes: _b, ...fromBytes } = openMarkdownFile(enc(s));
+    const { source, ...fromText } = openMarkdownText(s);
+    expect(source).toBe(s);
+    expect(fromText).toEqual(fromBytes);
+  });
+
+  it.each(cases)("%s: unedited, the original string", (_n, s) => {
+    const f = openMarkdownText(s);
+    expect(saveMarkdownText(f.text, f)).toBe(s);
+  });
+
+  it.each(cases)("%s: edited, the text saveMarkdownFile encodes", (_n, s) => {
+    const doc = "X\n" + openMarkdownText(s).text + "\nY";
+    expect(saveMarkdownText(doc, openMarkdownText(s))).toBe(dec(saveMarkdownFile(doc, openMarkdownFile(enc(s)))));
+  });
+
+  it("keeps the BOM a default TextDecoder would have dropped, when given it", () => {
+    const f = openMarkdownText(`${BOM}a\r\n`);
+    expect(f.bom).toBe(true);
+    expect(saveMarkdownText("A\n", f)).toBe(`${BOM}A\r\n`);
   });
 });

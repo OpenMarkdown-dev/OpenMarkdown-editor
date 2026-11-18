@@ -17,10 +17,12 @@ It is the editor inside the [OpenMarkdown](https://openmarkdown.dev) app, extrac
 ## Guides
 
 - [The host: `EditorHost`](guides/host.md): the per-document callbacks (changes, links, images, outline).
-- [The environment: `EditorEnvironment`](guides/environment.md): the once-per-page capabilities (color scheme, clipboard, links, spelling, keys).
+- [The environment: `EditorEnvironment`](guides/environment.md): per editor or as page defaults (color scheme, clipboard, links, spelling, keys).
+- [Embed in a form or CMS field](guides/embed-in-a-form.md): auto height, labels, a string value, read-only, image uploads, replacing a CodeMirror editor.
 - [Theming](guides/theming.md): the `--ome-*` custom properties.
 - [UI language](guides/language.md): English, Chinese, Japanese and Korean.
 - [Images](guides/images.md): showing, pasting, dropping and resizing.
+- [Markdown syntax](guides/syntax.md): what the editor renders, what it shows as written, and how math delimiters are read.
 - [Untrusted content](guides/untrusted-content.md): what the editor does with a document written by someone else.
 - [Server-side rendering](guides/ssr.md): importing on the server, mounting in the browser.
 - [Self-hosting](guides/self-hosting.md): building the editor into static files, without a bundler or a CDN, under a strict CSP.

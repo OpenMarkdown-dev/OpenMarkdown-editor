@@ -1,6 +1,6 @@
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
-import { StateEffect, StateField, type ChangeSet, type Extension } from "@codemirror/state";
-import { editorEnvironment, type SpellMiss, type SpellService } from "./environment";
+import { StateEffect, StateField, type ChangeSet, type EditorState, type Extension } from "@codemirror/state";
+import { environmentOf, type SpellMiss, type SpellService } from "./environment";
 import { proseContextAt, proseUnits, type ProseUnit } from "./spellProse";
 import { treeChanged } from "./syntax";
 
@@ -118,29 +118,51 @@ const SPELL_OFF: SpellService = {
   closeDocument: () => {},
 };
 
-/** The host's spell service, read at call time. */
-const spell = (): SpellService => editorEnvironment().spell ?? SPELL_OFF;
+/** The spell service of the editor showing `state` (change: editor-per-instance, D1). */
+const spellOf = (state: EditorState): SpellService => environmentOf(state).spell ?? SPELL_OFF;
 
 class SpellChecker {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private gen = 0;
   private ownDoc: number | null = null;
   private destroyed = false;
-  private readonly unsubscribe: () => void;
+  private unsubscribe: () => void = () => {};
+  /** The service this editor checks with; a new one (`setEnvironment`) is followed from the next update. */
+  private service: SpellService;
 
   constructor(readonly view: EditorView) {
-    this.unsubscribe = spell().onChange((on) => {
+    this.service = spellOf(view.state);
+    this.attach();
+  }
+
+  private attach(): void {
+    this.unsubscribe = this.service.onChange((on) => {
       if (on) this.schedule(0);
       else {
         cache.clear();
         this.clear();
       }
     });
-    if (spell().isOn()) this.schedule(0);
+    if (this.service.isOn()) this.schedule(0);
+  }
+
+  /** The service now: `this.service`, re-attached first when the environment changed it. */
+  private spell(): SpellService {
+    const now = spellOf(this.view.state);
+    if (now !== this.service && !this.destroyed) {
+      this.unsubscribe();
+      if (this.ownDoc !== null) this.service.closeDocument(this.ownDoc);
+      this.ownDoc = null;
+      this.service = now;
+      this.attach();
+      // Off now: a run (never mid-update) wipes the old service's squiggles.
+      if (!now.isOn()) this.schedule(0);
+    }
+    return this.service;
   }
 
   update(u: ViewUpdate): void {
-    if (!spell().isOn()) return;
+    if (!this.spell().isOn()) return;
     if (u.docChanged || u.viewportChanged || treeChanged(u) || u.startState.readOnly !== u.state.readOnly) {
       this.schedule(CHECK_DELAY_MS);
     }
@@ -150,12 +172,12 @@ class SpellChecker {
   spellDocument(): number | null {
     const outer = outerOf(this.view);
     if (outer) return outer.plugin(spellPlugin)?.spellDocument() ?? null;
-    return (this.ownDoc ??= spell().newDocument());
+    return (this.ownDoc ??= this.spell().newDocument());
   }
 
   /** Should this editor check now? */
   active(): boolean {
-    if (!spell().isOn() || this.view.state.readOnly) return false;
+    if (!this.spell().isOn() || this.view.state.readOnly) return false;
     const outer = outerOf(this.view);
     if (!outer) return true;
     const outerChecker = outer.plugin(spellPlugin);
@@ -205,9 +227,10 @@ class SpellChecker {
     if (ask.length > 0) {
       const spellDoc = this.spellDocument();
       if (spellDoc === null) return;
-      const answers = await spell().check(spellDoc, ask);
+      const service = this.spell();
+      const answers = await service.check(spellDoc, ask);
       if (!answers || answers.length !== ask.length) return; // logged; nothing cached, asked again next run
-      if (!spell().isOn()) return; // turned off while asking: cache cleared, keep it so
+      if (!service.isOn()) return; // turned off while asking: cache cleared, keep it so
       ask.forEach((text, i) => remember(text, answers[i]));
     }
     // A newer run, a changed document or a destroyed view: this answer is
@@ -221,7 +244,7 @@ class SpellChecker {
     this.destroyed = true;
     this.unsubscribe();
     if (this.timer) clearTimeout(this.timer);
-    if (this.ownDoc !== null) spell().closeDocument(this.ownDoc);
+    if (this.ownDoc !== null) this.service.closeDocument(this.ownDoc);
   }
 }
 
@@ -265,7 +288,7 @@ export async function spellingSuggestions(view: EditorView, miss: SpellMiss): Pr
   if (doc == null) return [];
   const unit = proseUnits(view.state, miss.from, miss.to).find((u) => u.from <= miss.from && miss.to <= u.from + u.text.length);
   if (!unit) return [];
-  return spell().suggestions(doc, unit.text, miss.from - unit.from, miss.to - unit.from);
+  return spellOf(view.state).suggestions(doc, unit.text, miss.from - unit.from, miss.to - unit.from);
 }
 
 /**

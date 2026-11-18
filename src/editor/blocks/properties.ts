@@ -225,11 +225,19 @@ class PropertiesWidget extends WidgetType {
   constructor(
     readonly source: string,
     readonly editing: ActiveProp | null,
+    /**
+     * May the user edit (not read-only)? Part of the widget's identity, so a
+     * switch to reading mode or `editable: false` redraws it without the
+     * delete / "+ Add property" / "Edit as source" controls (change:
+     * editor-per-instance, D2; finding #5).
+     */
+    readonly editable: boolean,
   ) {
     super();
   }
 
   eq(other: PropertiesWidget) {
+    if (this.editable !== other.editable) return false;
     if (this.editing || other.editing) {
       // Same DOM across the part's own keystrokes (focus + IME survive).
       return (
@@ -247,7 +255,7 @@ class PropertiesWidget extends WidgetType {
     const wrap = document.createElement("div");
     wrap.className = "om-props";
     const p = parseProps(this.source)!;
-    const editable = !view.state.readOnly;
+    const { editable } = this;
 
     p.props.forEach((prop, i) => {
       const row = document.createElement("div");
@@ -432,7 +440,7 @@ export const frontmatterEntry: BlockEntry = {
     const p = parsePropsOf(state);
     if (!p) return null; // unparseable → shown as source (spec: 解析失败直接显示源码)
     const editing = state.field(activePropField, false) ?? null;
-    return { from: p.from, to: p.to, widget: new PropertiesWidget(state.sliceDoc(p.from, p.to), editing) };
+    return { from: p.from, to: p.to, widget: new PropertiesWidget(state.sliceDoc(p.from, p.to), editing, !state.readOnly) };
   },
   enter: (view, _block, edge) => {
     const p = parsePropsOf(view.state);

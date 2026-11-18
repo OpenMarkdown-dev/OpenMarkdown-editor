@@ -89,8 +89,8 @@ export const insetStyles = {
     display: "inline-block",
     paddingRight: css(MARKER_GAP),
     fontVariantNumeric: "tabular-nums",
-    // text-indent INHERITS into an inline-block; zero it or it applies twice.
-    textIndent: "0",
+    // text-indent inherits into an inline-block; the one inline reset zeroes it
+    // (INLINE_RESET, ../primitives.ts).
     // Baseline alignment hangs the box's descent below the line and makes list
     // lines taller than paragraphs; the box's line-height equals the line's, so
     // top alignment puts the glyph in the same place.

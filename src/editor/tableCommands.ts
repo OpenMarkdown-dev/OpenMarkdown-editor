@@ -54,7 +54,7 @@ export function tableNavChange(
   };
 }
 
-// Auto-align on leave moved to `tableInlineEdit.ts` (change: table-inline-cell-editing):
-// the caret no longer enters table source, so reflow is now keyed on the in-place
+// The leave-time step lives in `tableInlineEdit.ts` (change: table-inline-cell-editing; now a settle of the edited cells, editor-edit-locality):
+// the caret no longer enters table source, so the settle is keyed on the in-place
 // edit session ending (activeEdit → null / a different table) rather than a caret
 // selection leaving the table range.

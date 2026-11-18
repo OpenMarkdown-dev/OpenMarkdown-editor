@@ -9,7 +9,7 @@ import {
   tableCellInsert,
   type Align,
 } from "./tableEdit";
-import { activeEditField, cellSync, setActiveEdit } from "./tableInlineEdit";
+import { activeEditField, cellSync, setActiveEdit, withPendingSettle } from "./tableInlineEdit";
 import { historyKeyOf } from "./historyKey";
 import { tableRangeAt } from "./tableCommands";
 import { renderInlineCell, type TableCellMark } from "./inlineCell";
@@ -28,7 +28,7 @@ import { imageElement } from "./imageElement";
 import { setMarkup, type SafeMarkup } from "./markup";
 import { diagramFloorWidth, diagramViewBox, measureMermaidStep, shownDiagramWidth } from "./mermaid";
 import { livePreviewConfig } from "./previewConfig";
-import { editorEnvironment } from "./environment";
+import { environmentOf } from "./environment";
 import { CalloutType, calloutTitle } from "./callout";
 import { contentMarkSvg, editorIconButton, type EditorGlyph } from "./controls";
 
@@ -60,24 +60,28 @@ export class CheckboxWidget extends WidgetType {
     readonly checked: boolean,
     readonly markerFrom: number,
     readonly markerTo: number,
+    /** `editable: false` (change: editor-per-instance, D2): drawn disabled, never toggles. */
+    readonly locked = false,
   ) {
     super();
   }
   eq(other: CheckboxWidget) {
-    return other.checked === this.checked && other.markerFrom === this.markerFrom;
+    return other.checked === this.checked && other.markerFrom === this.markerFrom && other.locked === this.locked;
   }
   toDOM(view: EditorView) {
     const box = document.createElement("input");
     box.type = "checkbox";
     box.className = "om-checkbox";
     box.checked = this.checked;
+    box.disabled = this.locked;
     box.addEventListener("mousedown", (e) => e.preventDefault());
     box.addEventListener("click", (e) => {
       e.preventDefault();
       // Intentionally no readOnly check: in reading mode the checkbox is the
       // one interactive control (markdown-as-form) — the programmatic dispatch
       // below is not blocked by the readOnly facet, which only gates commands
-      // and input handlers.
+      // and input handlers. A locked editor (`editable: false`) is not a form.
+      if (this.locked || view.state.facet(livePreviewConfig).locked) return;
       view.dispatch({
         changes: taskToggleChange(this.checked, this.markerFrom, this.markerTo),
         userEvent: "input",
@@ -278,7 +282,7 @@ export class ImageWidget extends WidgetType {
  * rendered (spec: 单元格原位编辑); the whole table no longer reverts to pipe
  * source. `editing` names the cell in edit; `eq` keys on it so per-keystroke sync
  * transactions preserve this DOM (focus + IME survive — design D3). Nav / exit go
- * through `activeEditField` effects; column reflow is deferred to session end.
+ * through `activeEditField` effects; settling the edited cells is deferred to session end.
  */
 /** Plain arrow keys only — a modifier means a selection or word move, not a cell switch. */
 function arrowDir(e: KeyboardEvent): "up" | "down" | "left" | "right" | null {
@@ -388,7 +392,7 @@ export class TableWidget extends WidgetType {
     // Cell images resolve like body images: same whitelist, same config.
     const { resolveImage } = view.state.facet(livePreviewConfig);
     // A cell formula met the converter not loaded: load it, then redraw.
-    const requestMath = () => loadMathThenRedraw(view);
+    const math = { state: view.state, request: () => loadMathThenRedraw(view) };
 
     model.rows.forEach((row, ri) => {
       const isHeader = ri === 0;
@@ -411,7 +415,7 @@ export class TableWidget extends WidgetType {
           // can't reach here, hence the standalone renderer). Find matches and
           // the landing are painted by it, from `marks`.
           const marks = this.marks.filter((m) => m.row === ri && m.col === ci);
-          el.appendChild(renderInlineCell(cell.text, resolveImage, requestMath, marks));
+          el.appendChild(renderInlineCell(cell.text, resolveImage, math, marks));
         }
         tr.appendChild(el);
       });
@@ -500,7 +504,7 @@ export class TableWidget extends WidgetType {
    * part editor (`blocks/partEditor.ts`) seeded with the cell's markdown and
    * rendered with the document's own live preview, so the cell looks the same
    * while you edit it and wraps inside the cell's width. Each keystroke replaces
-   * just that cell's content span in the doc (no reflow — deferred to session
+   * just that cell's content span in the doc (no re-padding — deferred to session
    * end). The cell's source range is re-derived from the document on EVERY sync
    * rather than cached: a cached offset goes stale the moment anything else edits
    * the doc, and the next write then runs past the cell's pipes and swallows its
@@ -605,12 +609,16 @@ export class TableWidget extends WidgetType {
       view.dispatch({ effects: setActiveEdit.of({ tableFrom: this.from, row: nav.row, col: nav.col }) });
       return true;
     }
-    // expand: append a row and land in it — the change + the cell switch ride one
-    // transaction (single undo unit).
-    view.dispatch({
-      changes: nav.change,
-      effects: setActiveEdit.of({ tableFrom: this.from, row: nav.row, col: nav.col }),
-      userEvent: "input",
+    // expand: append a row and land in it — the settle of the cells typed so far,
+    // the new row and the cell switch ride one transaction (single undo unit).
+    withPendingSettle(view, t.range, (text, from) => {
+      const grown = tableGridNav(parseTable(text, from)!, row, col, dir);
+      if (grown.kind !== "expand") return null;
+      return {
+        changes: grown.change,
+        effects: setActiveEdit.of({ tableFrom: this.from, row: grown.row, col: grown.col }),
+        userEvent: "input",
+      };
     });
     return true;
   }
@@ -643,7 +651,7 @@ export class CopyButtonWidget extends WidgetType {
   eq(other: CopyButtonWidget) {
     return other.body === this.body;
   }
-  toDOM() {
+  toDOM(view: EditorView) {
     // An md outline icon button from the one factory (change: editor-controls,
     // D5); theme.ts only places it and gives it a --background surface.
     const btn = editorIconButton({ glyph: "copy", size: "md", weight: "outline", title: editorString("widget.copyCode"), className: "om-code-copy" });
@@ -655,7 +663,7 @@ export class CopyButtonWidget extends WidgetType {
       // The host's clipboard write (spec: editor-host; the app's is its one
       // clipboard write and its one confirmation — change: feedback) — no
       // in-place check-icon swap of its own. No host: the button does nothing.
-      void editorEnvironment().copyText?.(this.body);
+      void environmentOf(view.state).copyText?.(this.body);
     });
     return btn;
   }

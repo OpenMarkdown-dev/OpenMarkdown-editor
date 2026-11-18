@@ -38,7 +38,7 @@ import { nestedPreview } from "./blocks/nested";
 import { followLink } from "./linkNavigate";
 import { clickFollowsLink } from "./linkGesture";
 import { imageEpoch, imageEpochField } from "./imageRefresh";
-import { FORMATTING_MARKS, linkTextIsEmpty, listMarkStandIn } from "./previewConceal";
+import { escapeMark, FORMATTING_MARKS, linkTextIsEmpty, listMarkStandIn } from "./previewConceal";
 import { isLink, linkMarkConcealable, referenceLabels, type ReferenceLabels, type SourceReader } from "./linkRefs";
 import { decorateInsets } from "./insets/decorate";
 import { coveredBySelection, withSelectedState } from "./selectionPaint";
@@ -238,6 +238,14 @@ class LivePreviewPluginValue {
     }
 
     switch (name) {
+      case "Escape": {
+        // `\*` shows `*`: the backslash is markup, revealed while the escape is touched.
+        if (touches(node.from, node.to)) return;
+        const mark = escapeMark(node);
+        conceal(mark.from, mark.to, hide, { from: node.from, to: node.to });
+        return;
+      }
+
       case "InlineCode": {
         deco.push(Decoration.mark({ class: "om-inline-code" }).range(node.from, node.to));
         return;
@@ -252,7 +260,7 @@ class LivePreviewPluginValue {
         // TeX → source with the failure mark, through the one wrapper (change:
         // block-fallback, design D3).
         const source = state.sliceDoc(node.from, node.to);
-        const out = attemptRender(() => renderFormula(mathBody(source), false));
+        const out = attemptRender(() => renderFormula(state, mathBody(source), false));
         if (out.kind === "pending") {
           const widget = new PendingWidget("inline", node.from, reservedSize({}), undefined, source);
           conceal(node.from, node.to, Decoration.replace({ widget }));
@@ -439,7 +447,7 @@ class LivePreviewPluginValue {
           node.from,
           // Also consume the space after the marker.
           state.sliceDoc(node.to, node.to + 1) === " " ? node.to + 1 : node.to,
-          Decoration.replace({ widget: new CheckboxWidget(checked, node.from, node.to) }),
+          Decoration.replace({ widget: new CheckboxWidget(checked, node.from, node.to, config.locked === true) }),
         );
         // Strike through the completed task's text.
         if (checked) {

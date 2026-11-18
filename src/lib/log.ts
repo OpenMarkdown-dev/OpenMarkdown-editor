@@ -25,3 +25,22 @@ export function installErrorNet(): void {
   installed = true;
   window.addEventListener("unhandledrejection", (e) => logError("unhandled rejection", e.reason));
 }
+
+/**
+ * Run `load` (a module import) with ONE warning, matched exactly, kept off the
+ * console while it runs; every other warning passes through untouched. For a
+ * third-party module that warns at load time about something the editor does
+ * not use — Temml's quirks-mode notice, which concerns its `render()` into a
+ * page, never the `renderToString` the editor calls (change: editor-lean-deps).
+ */
+export async function loadWithoutWarning<T>(warning: string, load: () => Promise<T>): Promise<T> {
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    if (!(args.length === 1 && args[0] === warning)) warn.apply(console, args);
+  };
+  try {
+    return await load();
+  } finally {
+    console.warn = warn;
+  }
+}

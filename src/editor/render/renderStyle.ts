@@ -60,12 +60,15 @@ function rules(): string[] {
       background: v("bg"),
       color: v("fg"),
       fontFamily: v("font"),
-      fontSize: TYPE_SCALE.body.fontSize,
-      lineHeight: TYPE_SCALE.body.lineHeight,
+      // The body size, line height, column and its padding are the editor's
+      // layout tokens (change: editor-style-contract), whose defaults are
+      // TYPE_SCALE's: the same knobs restyle the editor and a rendered page.
+      fontSize: v("font-size"),
+      lineHeight: v("line-height"),
       margin: "0",
     }),
   );
-  out.push(rule(`${D} .om-doc-body`, { maxWidth: TYPE_SCALE.measure, margin: "0 auto", padding: "2rem 2.5rem" }));
+  out.push(rule(`${D} .om-doc-body`, { maxWidth: v("content-width"), margin: "0 auto", padding: `${v("padding-y")} ${v("padding-x")}` }));
   for (const level of [1, 2, 3, 4, 5, 6] as const) {
     out.push(rule(`${D} h${level}`, { ...headingType(level), margin: "1.2em 0 0.4em" }));
   }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EditorView } from "@codemirror/view";
-import { fileLabel, fileLinkInsertText, imageInsertText, storeAndInsert, unsupportedPasteReason } from "./imagePaste";
+import { fileLabel, fileLinkInsertText, imageInsertText, imageStoreFor, storeAndInsert } from "./imagePaste";
 
 describe("imageInsertText", () => {
   it("builds a markdown image with an empty alt and the relative path", () => {
@@ -64,21 +64,61 @@ describe("an image the host cannot store", () => {
   // The no-capability path returns before it touches the view.
   const noView = {} as EditorView;
 
+  const reason = (docPath: string | null, savers: Parameters<typeof imageStoreFor>[1]) => {
+    const where = imageStoreFor(docPath, savers);
+    return "missing" in where ? where.missing : null;
+  };
+
   it("names why, the missing save first", () => {
-    expect(unsupportedPasteReason("/n/a.md", undefined)).toBe("no-save-attachment");
-    expect(unsupportedPasteReason(null, undefined)).toBe("no-save-attachment");
-    expect(unsupportedPasteReason(null, save)).toBe("no-doc-path");
-    expect(unsupportedPasteReason("/n/a.md", save)).toBeNull();
+    expect(reason("/n/a.md", {})).toBe("no-save-attachment");
+    expect(reason(null, {})).toBe("no-save-attachment");
+    expect(reason(null, { saveAttachment: save })).toBe("no-doc-path");
+    expect(reason("/n/a.md", { saveAttachment: save })).toBeNull();
   });
 
   it("tells onUnsupportedPaste, with the count, and inserts nothing", async () => {
     const heard: [string, number][] = [];
-    await storeAndInsert(noView, [png, png], "/n/a.md", undefined, 0, (r, n) => heard.push([r, n]));
-    await storeAndInsert(noView, [png], null, save, 0, (r, n) => heard.push([r, n]));
+    await storeAndInsert(noView, [png, png], "/n/a.md", {}, 0, (r, n) => heard.push([r, n]));
+    await storeAndInsert(noView, [png], null, { saveAttachment: save }, 0, (r, n) => heard.push([r, n]));
     expect(heard).toEqual([["no-save-attachment", 2], ["no-doc-path", 1]]);
   });
 
   it("stays silent without the hook (no throw)", async () => {
-    await expect(storeAndInsert(noView, [png], "/n/a.md", undefined, 0)).resolves.toBeUndefined();
+    await expect(storeAndInsert(noView, [png], "/n/a.md", {}, 0)).resolves.toBeUndefined();
+  });
+});
+
+// change: editor-per-instance, design D6 (finding #11) — a document with no path
+// stores its images through `uploadImage`, and links what it resolves.
+describe("an image for a document without a path", () => {
+  const png = { type: "image/png", name: "a.png", arrayBuffer: async () => new Uint8Array([1, 2]).buffer } as unknown as File;
+  const upload = async (bytes: Uint8Array, hint: string | null) => `https://cdn.example/${hint}?n=${bytes.length}`;
+
+  it("goes to uploadImage when there is no path, or no saveAttachment", async () => {
+    const pathless = imageStoreFor(null, { uploadImage: upload, saveAttachment: async () => "beside.png" });
+    expect("store" in pathless && (await pathless.store(new Uint8Array(2), "a.png"))).toBe("https://cdn.example/a.png?n=2");
+    const onlyUpload = imageStoreFor("/n/a.md", { uploadImage: upload });
+    expect("store" in onlyUpload && (await onlyUpload.store(new Uint8Array(1), "b.png"))).toBe("https://cdn.example/b.png?n=1");
+  });
+
+  it("prefers saveAttachment when the document has a path", async () => {
+    const both = imageStoreFor("/n/a.md", { uploadImage: upload, saveAttachment: async (p) => `beside-${p}` });
+    expect("store" in both && (await both.store(new Uint8Array(1), null))).toBe("beside-/n/a.md");
+  });
+
+  it("inserts the uploaded URL as the image target, caret in the alt text", async () => {
+    const dispatched: unknown[] = [];
+    const view = { dispatch: (t: unknown) => dispatched.push(t), focus: () => {} } as unknown as EditorView;
+    await storeAndInsert(view, [png], null, { uploadImage: upload }, 5);
+    expect(dispatched).toEqual([
+      { changes: { from: 5, insert: "![](https://cdn.example/a.png?n=2)" }, selection: { anchor: 7 }, userEvent: "input" },
+    ]);
+  });
+
+  it("inserts nothing when the upload resolves null", async () => {
+    const dispatched: unknown[] = [];
+    const view = { dispatch: (t: unknown) => dispatched.push(t), focus: () => {} } as unknown as EditorView;
+    await storeAndInsert(view, [png], null, { uploadImage: async () => null }, 0);
+    expect(dispatched).toEqual([]);
   });
 });

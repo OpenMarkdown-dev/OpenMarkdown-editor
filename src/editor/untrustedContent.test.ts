@@ -1,7 +1,9 @@
+import { importTemml } from "./mathImport";
 import { beforeAll, describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { GLYPH_SVG_ALLOW, MATHML_ALLOW, UnsafeMarkupError, mermaidMarkup, sanitizeMarkup, styleDeclarations } from "./markup";
+import { GLYPH_SVG_ALLOW, MATHML_ALLOW, UnsafeMarkupError, sanitizeMarkup, styleDeclarations } from "./markup";
+import { mermaidMarkup } from "./diagramMarkup";
 import { ensureMath, renderMath } from "./math";
 import { EDITOR_GLYPHS, glyphSvg, type EditorGlyph } from "./controls";
 import { resolveLinkTarget } from "./linkResolve";
@@ -114,7 +116,7 @@ describe("strict CSP — the sink writes no style attribute (change: editor-inte
 
 describe("math — document TeX through Temml and the sink", () => {
   beforeAll(async () => {
-    await new Promise<void>((resolve) => ensureMath(resolve));
+    await new Promise<void>((resolve) => ensureMath(importTemml, resolve));
   });
   const render = (tex: string) => attemptRender(() => renderMath(tex, true));
 

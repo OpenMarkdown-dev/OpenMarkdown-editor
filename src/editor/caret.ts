@@ -223,7 +223,9 @@ export function strandedIn(
   bodyHasFocus?: boolean,
 ): { block: CaretBlock; pos: number; head?: number } | null {
   const hooks = state.facet(blockCaret);
-  if (!hooks) return null;
+  // A read-only document has no parts to open: the caret on a table line in
+  // Reading mode stays on it (and an open part is ended by the mode switch).
+  if (!hooks || state.readOnly) return null;
   const sel = state.selection.main;
   if (!sel.empty) return strandedRange(state, hooks, bodyHasFocus);
   // The Find input has the keys: nothing opens until the body takes them back
@@ -473,4 +475,31 @@ export function navigateTo(view: EditorView, pos: number): void {
     userEvent: "select",
   });
   view.focus();
+}
+
+/** Where `text` first occurs in `doc` (as CodeMirror holds it, `\n` breaks), or null. Pure. */
+export function findTextRange(doc: string, text: string): { from: number; to: number } | null {
+  const needle = text.replace(/\r\n?/g, "\n");
+  if (!needle) return null;
+  const from = doc.indexOf(needle);
+  return from < 0 ? null : { from, to: from + needle.length };
+}
+
+/**
+ * A host's reveal of a passage (`editor.revealText`; change:
+ * editor-per-instance, design D4): select its first occurrence and bring it
+ * into view the way Find shows its current match — the landing scroll, so a
+ * match in a table cell scrolls the cell in (落点看得见 L2). An open cell /
+ * property edit ends first, so the selection is painted where it is. Focus
+ * stays where it was. False, and nothing moves, on a miss.
+ */
+export function revealText(view: EditorView, text: string): boolean {
+  const range = findTextRange(view.state.doc.toString(), text);
+  if (!range) return false;
+  view.dispatch({
+    selection: { anchor: range.from, head: range.to },
+    effects: [...leaveBlockEdits(view.state), scrollLanding(range, view)],
+    userEvent: "select",
+  });
+  return true;
 }

@@ -54,6 +54,8 @@ export interface ParsedCell {
   from: number;
   /** Doc offset of the trimmed content end. */
   to: number;
+  /** Doc offset where the cell's segment ends (its right pipe, or the row's end). */
+  end: number;
 }
 
 export interface ParsedRow {
@@ -76,15 +78,18 @@ export interface ParsedTable {
   delimLineTo: number;
   /** Whether a whole-table rewrite keeps the table's container (`tableRewritable`). */
   rewritable: boolean;
+  /** The table's source text, as parsed. */
+  source: string;
 }
 
 /**
- * Split one table row into cells with doc offsets for the trimmed content.
- * Handles the optional leading/trailing `|` and escaped `\|` pipes.
+ * Where one table row's cells sit in its line: the inner region (one leading
+ * `|` after leading spaces and one trailing unescaped `|` before trailing spaces
+ * stripped) and the raw segments between unescaped pipes, padding included.
+ * Handles escaped `\|` pipes. The one row splitter: the trimmed cells
+ * (`splitRowWithOffsets`) and the raw layout (`rawRows`) both read it.
  */
-function splitRowWithOffsets(line: string, lineFrom: number): ParsedCell[] {
-  // Inner region = strip one leading `|` (after leading spaces) and one trailing
-  // unescaped `|` (before trailing spaces).
+function rowSpans(line: string): { innerStart: number; innerEnd: number; spans: [number, number][] } {
   let innerStart = 0;
   while (innerStart < line.length && line[innerStart] === " ") innerStart++;
   if (line[innerStart] === "|") innerStart++;
@@ -97,7 +102,7 @@ function splitRowWithOffsets(line: string, lineFrom: number): ParsedCell[] {
     innerEnd = lastNonSpace - 1;
   }
 
-  const cells: ParsedCell[] = [];
+  const spans: [number, number][] = [];
   let segStart = innerStart;
   let escaped = false;
   for (let i = innerStart; i < innerEnd; i++) {
@@ -107,12 +112,17 @@ function splitRowWithOffsets(line: string, lineFrom: number): ParsedCell[] {
     } else if (ch === "\\") {
       escaped = true;
     } else if (ch === "|") {
-      cells.push(trimmedCell(line, segStart, i, lineFrom));
+      spans.push([segStart, i]);
       segStart = i + 1;
     }
   }
-  cells.push(trimmedCell(line, segStart, innerEnd, lineFrom));
-  return cells;
+  spans.push([segStart, innerEnd]);
+  return { innerStart, innerEnd, spans };
+}
+
+/** Split one table row into cells with doc offsets for the trimmed content. */
+function splitRowWithOffsets(line: string, lineFrom: number): ParsedCell[] {
+  return rowSpans(line).spans.map(([s, e]) => trimmedCell(line, s, e, lineFrom));
 }
 
 /**
@@ -142,9 +152,13 @@ export function cellDisplaySource(cell: string): { text: string; at: number[] } 
 function trimmedCell(line: string, s: number, e: number, lineFrom: number): ParsedCell {
   let from = s;
   while (from < e && line[from] === " ") from++;
+  // An empty cell is an insertion point one space in from its left pipe (change:
+  // editor-edit-locality): typing into `|   |` writes `| x  |`, the way the cell
+  // would be written by hand, not `|   x|` against the right pipe.
+  if (from === e) from = Math.min(s + 1, e);
   let to = e;
   while (to > from && line[to - 1] === " ") to--;
-  return { text: line.slice(from, to), from: from + lineFrom, to: to + lineFrom };
+  return { text: line.slice(from, to), from: from + lineFrom, to: to + lineFrom, end: e + lineFrom };
 }
 
 // --- alignment parsing ------------------------------------------------------
@@ -202,6 +216,7 @@ export function parseTable(tableText: string, tableFrom: number): ParsedTable | 
     delimLineFrom: lines[1].from,
     delimLineTo: lines[1].from + lines[1].text.length,
     rewritable: tableRewritable(tableText),
+    source: tableText,
   };
 }
 
@@ -291,6 +306,375 @@ export function tableRewritable(tableText: string): boolean {
   return tableText.split("\n").slice(1).every((line) => !/^[ \t>]/.test(line));
 }
 
+// --- the table's own layout (change: editor-edit-locality) ------------------
+//
+// An edit changes only what it touched; untouched source keeps its own style
+// (spec: editor-fidelity / 规整登记表 N1, N2). Everything below reads a table's
+// style off the table itself — no option, no canonical form imposed:
+//
+//   - ALIGNED: the pipes of most rows line up (one segment width per column) and
+//     something shows the padding is deliberate (a cell padded past the table's
+//     margin, an empty cell wider than the margins, a delimiter run longer than
+//     `---`). Without that evidence a table whose cells merely happen to be the
+//     same width reads as compact — the reading that rewrites fewer bytes.
+//   - COMPACT: anything else (`|a|b|`, `| a | b |`, `| x | y |\n|---|---|`).
+//
+// A row whose segments do not match the column widths (a hand-compacted row in
+// an aligned table) is not an aligned row, and nothing here re-pads it.
+
+type Justify = "left" | "right" | "center";
+
+/** One raw segment between pipes (or a row edge), padding included. */
+interface RawSeg {
+  /** Doc offsets of the whole segment. */
+  from: number;
+  to: number;
+  /** The trimmed content. */
+  content: string;
+  /** Spaces before / after the content; an empty segment is all `trail`. */
+  lead: number;
+  trail: number;
+  /** Display width of the whole segment. */
+  width: number;
+  /** Bounded by a pipe on the left / on the right (not by the row's edge). */
+  leftPipe: boolean;
+  rightPipe: boolean;
+}
+
+interface RawRow {
+  from: number;
+  text: string;
+  /** Everything before the first segment (`|`, or indentation + `|`) and after the last. */
+  prefix: string;
+  suffix: string;
+  segs: RawSeg[];
+  delimiter: boolean;
+  /** Has both a leading and a trailing pipe. */
+  piped: boolean;
+}
+
+function rawRow(text: string, lineFrom: number, delimiter: boolean): RawRow {
+  const { innerStart, innerEnd, spans } = rowSpans(text);
+  const leading = innerStart > 0;
+  const trailing = innerEnd < text.length;
+  const segs = spans.map(([s, e], i): RawSeg => {
+    const raw = text.slice(s, e);
+    const content = raw.replace(/^ +| +$/g, "");
+    const lead = content === "" ? 0 : raw.length - raw.replace(/^ +/, "").length;
+    const trail = raw.length - lead - content.length;
+    return {
+      from: lineFrom + s,
+      to: lineFrom + e,
+      content,
+      lead,
+      trail,
+      width: displayWidth(raw),
+      leftPipe: i > 0 || leading,
+      rightPipe: i < spans.length - 1 || trailing,
+    };
+  });
+  return {
+    from: lineFrom,
+    text,
+    prefix: text.slice(0, innerStart),
+    suffix: text.slice(innerEnd),
+    segs,
+    delimiter,
+    piped: leading && trailing,
+  };
+}
+
+/** Every line of a table as a raw row (line 0 header, line 1 delimiter, then body). */
+function rawRows(tableText: string, tableFrom: number): RawRow[] {
+  let off = tableFrom;
+  return tableText.split("\n").map((text, i) => {
+    const row = rawRow(text, off, i === 1);
+    off += text.length + 1;
+    return row;
+  });
+}
+
+/** Line index of a grid row (row over header+body; the delimiter is line 1). */
+const lineOfRow = (row: number) => (row === 0 ? 0 : row + 1);
+
+interface TableLayout {
+  /** The column count over every row. */
+  cols: number;
+  /** Segment width per column where the rows agree (null: no closed segment to read). */
+  widths: (number | null)[];
+  /** Per line: its pipes sit on the column widths (wild cells not compared). */
+  rowAligned: boolean[];
+  /** The table as a whole is aligned (see the section comment). */
+  aligned: boolean;
+  /** Content cells' margins: the fewest spaces seen before / after a cell's text. */
+  mL: number;
+  mR: number;
+  /** The delimiter row's own margins and its shortest dash run. */
+  dL: number;
+  dR: number;
+  dashes: number;
+  /** How content sits in each column's padding, read off its padded cells. */
+  justify: Justify[];
+}
+
+const dashCount = (s: string) => (s.match(/-/g) ?? []).length;
+
+/** The most frequent value; a tie goes to the one seen first (in row order: the header). */
+function mode(values: number[]): number | null {
+  const counts = new Map<number, number>();
+  for (const v of values) counts.set(v, (counts.get(v) ?? 0) + 1);
+  let best: number | null = null;
+  for (const v of values) if (best === null || counts.get(v)! > counts.get(best)!) best = v;
+  return best;
+}
+
+/**
+ * Read a table's layout. `wild(line, col)` marks cells the current edit wrote:
+ * they are not evidence of the table's style (their padding is whatever typing
+ * left), so they are skipped when the widths, margins and alignment are read.
+ */
+function tableLayout(rows: RawRow[], wild: (line: number, col: number) => boolean = () => false): TableLayout {
+  const cols = Math.max(...rows.map((r) => r.segs.length));
+  const closed = (r: RawRow, c: number) => !!r.segs[c] && r.segs[c].leftPipe && r.segs[c].rightPipe;
+
+  const widths: (number | null)[] = [];
+  for (let c = 0; c < cols; c++) {
+    // Content rows decide; the delimiter row only when no content row can (a
+    // compact `|---|` delimiter under padded rows must not win a tie).
+    const seen = (delimiter: boolean) =>
+      rows.flatMap((r, li) => (r.delimiter === delimiter && closed(r, c) && !wild(li, c) ? [r.segs[c].width] : []));
+    widths.push(mode(seen(false)) ?? mode(seen(true)));
+  }
+  const prefixWidth = mode(rows.map((r) => displayWidth(r.prefix)));
+
+  const compared: number[] = [];
+  const rowAligned = rows.map((r, li) => {
+    let n = 0;
+    let ok = displayWidth(r.prefix) === prefixWidth;
+    for (let c = 0; c < r.segs.length; c++) {
+      if (!closed(r, c) || wild(li, c) || widths[c] === null) continue;
+      n++;
+      if (r.segs[c].width !== widths[c]) ok = false;
+    }
+    compared.push(n);
+    return ok;
+  });
+  // Aligned lines must be the majority of the lines that could be compared, so
+  // one row that happens to match a compact delimiter does not make a table
+  // aligned. A line whose every cell was just edited has nothing to compare; it
+  // still counts toward the two lines an alignment needs.
+  const comparable = compared.filter((n) => n > 0).length;
+  const matching = rowAligned.filter((ok, li) => ok && compared[li] > 0).length;
+  const editedOnly = rowAligned.filter((ok, li) => ok && compared[li] === 0).length;
+  const alignedLines = matching * 2 > comparable ? matching + editedOnly : 0;
+
+  // Margins and justification come from the aligned rows when there are any:
+  // a hand-compacted row's `|Raj|` must not read as the table's margin.
+  const marginRows = rows
+    .map((r, li) => ({ r, li }))
+    .filter(({ r, li }) => !r.delimiter && (alignedLines >= 2 ? rowAligned[li] : true));
+  const content = marginRows.flatMap(({ r, li }) =>
+    r.segs.flatMap((seg, c) => (closed(r, c) && !wild(li, c) ? [seg] : [])),
+  );
+  const filled = content.filter((seg) => seg.content !== "");
+  // A margin is at most one space (`|a|`, `| a |`); anything past it is padding —
+  // so a lone padded row still shows its padding is deliberate.
+  const mL = filled.length ? Math.min(1, ...filled.map((s) => s.lead)) : 1;
+  const mR = filled.length ? Math.min(1, ...filled.map((s) => s.trail)) : 1;
+
+  const delim = rows[1];
+  const delimSegs = delim ? delim.segs.filter((seg) => seg.content !== "") : [];
+  const dL = delimSegs.length ? Math.min(...delimSegs.map((s) => s.lead)) : mL;
+  const dR = delimSegs.length ? Math.min(...delimSegs.map((s) => s.trail)) : mR;
+  const dashes = delimSegs.length ? Math.max(1, Math.min(...delimSegs.map((s) => dashCount(s.content)))) : MIN_COL_WIDTH;
+
+  const evidence =
+    content.some((seg) => (seg.content === "" ? seg.width > mL + mR : seg.lead > mL || seg.trail > mR)) ||
+    (!!delim && rowAligned[1] && delim.segs.some((seg) => dashCount(seg.content) > MIN_COL_WIDTH));
+
+  // Body cells decide; the header only when no body cell is padded (a header is
+  // often written left-justified over a right-justified column).
+  const justify: Justify[] = [];
+  for (let c = 0; c < cols; c++) {
+    const paddedIn = (rowsIn: typeof marginRows) =>
+      rowsIn.flatMap(({ r, li }) => {
+        const seg = r.segs[c];
+        return seg && closed(r, c) && !wild(li, c) && seg.content !== "" && seg.lead + seg.trail > mL + mR ? [seg] : [];
+      });
+    const body = paddedIn(marginRows.filter(({ li }) => li > 1));
+    const padded = body.length ? body : paddedIn(marginRows);
+    if (padded.every((seg) => seg.lead === mL)) justify.push("left");
+    else if (padded.every((seg) => seg.trail === mR)) justify.push("right");
+    else justify.push("center");
+  }
+
+  return { cols, widths, rowAligned, aligned: alignedLines >= 2 && evidence, mL, mR, dL, dR, dashes, justify };
+}
+
+/** Lead / trail spaces that put content of width `w` in a segment of width `W`. */
+function padFor(L: TableLayout, c: number, w: number, W: number): { lead: number; trail: number } {
+  const extra = Math.max(0, W - w - L.mL - L.mR);
+  switch (L.justify[c] ?? "left") {
+    case "right":
+      return { lead: L.mL + extra, trail: L.mR };
+    case "center":
+      return { lead: L.mL + Math.floor(extra / 2), trail: L.mR + Math.ceil(extra / 2) };
+    default:
+      return { lead: L.mL, trail: L.mR + extra };
+  }
+}
+
+/**
+ * The padding-only changes that give `seg` `lead` / `trail` spaces. The content
+ * itself is never rewritten, so a caret inside it maps through unmoved.
+ */
+function repad(seg: RawSeg, lead: number, trail: number): TableChange[] {
+  const spaces = (n: number) => " ".repeat(n);
+  if (seg.content === "") {
+    const delta = lead + trail - (seg.to - seg.from);
+    if (delta > 0) return [{ from: seg.to, to: seg.to, insert: spaces(delta) }];
+    if (delta < 0) return [{ from: seg.to + delta, to: seg.to, insert: "" }];
+    return [];
+  }
+  const out: TableChange[] = [];
+  if (lead > seg.lead) out.push({ from: seg.from, to: seg.from, insert: spaces(lead - seg.lead) });
+  if (lead < seg.lead) out.push({ from: seg.from, to: seg.from + seg.lead - lead, insert: "" });
+  if (trail > seg.trail) out.push({ from: seg.to, to: seg.to, insert: spaces(trail - seg.trail) });
+  if (trail < seg.trail) out.push({ from: seg.to - (seg.trail - trail), to: seg.to, insert: "" });
+  return out;
+}
+
+/** Widen one untouched segment by `d`, keeping its own padding on the side it already pads. */
+function widen(L: TableLayout, seg: RawSeg, delimiter: boolean, d: number): TableChange[] {
+  if (d <= 0) return [];
+  if (delimiter) {
+    // More dashes, colons kept: insert after the run's last dash.
+    const last = seg.content.lastIndexOf("-");
+    if (last < 0) return [];
+    const at = seg.from + seg.lead + last + 1;
+    return [{ from: at, to: at, insert: "-".repeat(d) }];
+  }
+  // The cell's own placement decides: flush left grows on the right, flush
+  // right grows on the left, anything else is re-centred.
+  if (seg.content === "" || seg.lead <= L.mL) return repad(seg, seg.lead, seg.trail + d);
+  if (seg.trail <= L.mR) return repad(seg, seg.lead + d, seg.trail);
+  const extra = seg.lead + seg.trail + d - L.mL - L.mR;
+  return repad(seg, L.mL + Math.floor(extra / 2), L.mR + Math.ceil(extra / 2));
+}
+
+/**
+ * The changes that settle the cells an edit session wrote (spec: editor-fidelity
+ * N1). Cell typing writes only the cell's text; when the session ends, an
+ * ALIGNED table gets the padding of each edited cell back to its column's width
+ * — and, when an edited cell no longer fits, that one column is widened in the
+ * table's aligned rows (delimiter dashes included, colons kept). Nothing else
+ * moves: a compact table, a row that is not aligned (hand-compacted), every
+ * other column and every untouched cell stay byte for byte. Columns never
+ * shrink — the other rows keep their padding.
+ *
+ * The style is read off `origin` — the table as it was before the session's
+ * first keystroke — when it still has the same lines and cells: that is the
+ * table's own style, the edited cells' old padding included. Without it (or
+ * after a foreign change reshaped the table) it is read off the current text
+ * with the edited cells left out as evidence.
+ *
+ * `cells` are grid positions (row over header+body). Returns [] when there is
+ * nothing to settle. Changes are padding-only, sorted, in doc offsets. Pure.
+ */
+export function settleCellsChange(
+  tableText: string,
+  tableFrom: number,
+  cells: readonly { row: number; col: number }[],
+  origin: string | null = null,
+): TableChange[] {
+  if (!cells.length || !tableRewritable(tableText) || !parseTable(tableText, tableFrom)) return [];
+  const rows = rawRows(tableText, tableFrom);
+  const edited = new Set(cells.map((cell) => `${lineOfRow(cell.row)}:${cell.col}`));
+  const before = origin !== null && parseTable(origin, tableFrom) ? rawRows(origin, tableFrom) : null;
+  const sameShape =
+    !!before && before.length === rows.length && before.every((r, li) => r.segs.length === rows[li].segs.length);
+  const L = sameShape ? tableLayout(before!) : tableLayout(rows, (li, c) => edited.has(`${li}:${c}`));
+  if (!L.aligned) return [];
+  /** The line still sits on the widths read (its untouched cells unchanged in width). */
+  const stillAligned = (li: number) =>
+    L.rowAligned[li] &&
+    rows[li].segs.every(
+      (seg, c) => edited.has(`${li}:${c}`) || !seg.leftPipe || !seg.rightPipe || L.widths[c] === null || seg.width === L.widths[c],
+    );
+
+  const target = L.widths.slice();
+  const settle: { seg: RawSeg; col: number }[] = [];
+  for (const key of edited) {
+    const [li, col] = key.split(":").map(Number);
+    const seg = rows[li]?.segs[col];
+    const W = L.widths[col];
+    if (!seg || !seg.leftPipe || !seg.rightPipe || W === null || !stillAligned(li)) continue;
+    target[col] = Math.max(target[col]!, L.mL + displayWidth(seg.content) + L.mR);
+    settle.push({ seg, col });
+  }
+
+  const changes: TableChange[] = [];
+  for (let c = 0; c < L.cols; c++) {
+    const W = L.widths[c];
+    const T = target[c];
+    if (W === null || T === null || T <= W) continue;
+    rows.forEach((r, li) => {
+      const seg = r.segs[c];
+      if (!seg || !seg.leftPipe || !seg.rightPipe || edited.has(`${li}:${c}`) || !stillAligned(li)) return;
+      changes.push(...widen(L, seg, r.delimiter, T - W));
+    });
+  }
+  for (const { seg, col } of settle) {
+    const p = padFor(L, col, displayWidth(seg.content), target[col]!);
+    changes.push(...repad(seg, p.lead, p.trail));
+  }
+  return changes.sort((a, b) => a.from - b.from);
+}
+
+/** `changes` (sorted, non-overlapping, doc offsets) applied to the table text at `tableFrom`. */
+export function applyTableChanges(tableText: string, tableFrom: number, changes: readonly TableChange[]): string {
+  let out = tableText;
+  for (const ch of [...changes].sort((a, b) => b.from - a.from)) {
+    out = out.slice(0, ch.from - tableFrom) + ch.insert + out.slice(ch.to - tableFrom);
+  }
+  return out;
+}
+
+// --- rows and columns in the table's own style (spec: N2) -------------------
+
+/** Every row has both outer pipes — the tables the styled structural edits handle. */
+function allPiped(rows: RawRow[]): boolean {
+  return rows.every((r) => r.piped);
+}
+
+/**
+ * An empty content segment for column `c`: padded to the column in an aligned
+ * row, else the margins of `row` itself (a hand-compacted `|a|b|` row gets `||`),
+ * or the table's margins for a new row.
+ */
+function blankSeg(L: TableLayout, c: number, aligned: boolean, width: number | null = L.widths[c], row?: RawRow): string {
+  if (aligned && width !== null) return " ".repeat(width);
+  const filled = row ? row.segs.filter((seg) => seg.content !== "" && seg.leftPipe && seg.rightPipe) : [];
+  if (filled.length) return " ".repeat(Math.min(...filled.map((s) => s.lead)) + Math.min(...filled.map((s) => s.trail)));
+  return " ".repeat(L.mL + L.mR);
+}
+
+/** A delimiter segment for a new column. */
+function blankDelimSeg(L: TableLayout, aligned: boolean, width: number | null): string {
+  const run = aligned && width !== null ? Math.max(1, width - L.dL - L.dR) : L.dashes;
+  return " ".repeat(L.dL) + "-".repeat(run) + " ".repeat(L.dR);
+}
+
+/** The text of an empty body row in the table's style. */
+function blankRowText(L: TableLayout, cols: number): string {
+  const segs: string[] = [];
+  for (let c = 0; c < cols; c++) segs.push(blankSeg(L, c, L.aligned));
+  return "|" + segs.join("|") + "|";
+}
+
+const rowWith = (r: RawRow, segs: string[]) => r.prefix + segs.join("|") + r.suffix;
+const segTexts = (r: RawRow) => r.segs.map((seg) => r.text.slice(seg.from - r.from, seg.to - r.from));
+
 // --- cursor location --------------------------------------------------------
 
 /** Grid position (row over header+body, col over cells) of the cursor. */
@@ -298,7 +682,8 @@ function locate(p: ParsedTable, cursor: number): { r: number; c: number } {
   let r = 0;
   for (let i = 0; i < p.rows.length; i++) if (p.rows[i].lineFrom <= cursor) r = i;
   const row = p.rows[r];
-  let c = row.cells.findIndex((cell) => cursor <= cell.to);
+  // The cell whose segment holds the cursor, its padding included.
+  let c = row.cells.findIndex((cell) => cursor <= cell.end);
   if (c < 0) c = Math.max(0, row.cells.length - 1);
   return { r, c };
 }
@@ -337,12 +722,10 @@ export function tableCellNav(
     if (c + 1 < row.cells.length) return asMove(row.cells[c + 1]);
     if (r + 1 < p.rows.length) return asMove(p.rows[r + 1].cells[0]);
     // last cell of last row → append a row and land in its first cell
-    if (!p.rewritable) return { kind: "noop" };
-    const data = tableDataFromParsed(p);
-    data.body.push(new Array(data.aligns.length).fill(""));
-    const insert = serializeTable(data);
-    const cell = cellAt(parseTable(insert, tableFrom)!, p.rows.length, 0);
-    return { kind: "change", from: p.from, to: p.to, insert, anchor: cell.from, head: cell.to };
+    const grown = appendRowChange(p);
+    if (!grown) return { kind: "noop" };
+    const cell = cellAt(parseTable(grown.insert, tableFrom)!, p.rows.length, 0);
+    return { kind: "change", ...grown, anchor: cell.from, head: cell.to };
   }
   if (c - 1 >= 0) return asMove(row.cells[c - 1]);
   if (r - 1 >= 0) {
@@ -399,10 +782,61 @@ function swapCol(data: TableData, a: number, b: number): void {
 }
 
 /**
- * Apply a structural op at the cursor's cell and return the whole-table
- * re-serialization (canonical GFM) plus the new cursor. Returns null when the
- * text isn't a table or the op is a boundary no-op (move at an edge). Deleting
- * the last column removes the whole table (spec: 删除列的边界安全).
+ * Append an empty body row to the table (Tab / Enter past the last cell, spec:
+ * N2): every existing line stays byte for byte and the new row is written in
+ * the table's own style — padded to the column widths in an aligned table, the
+ * table's margins in a compact one. A table without outer pipes on every row
+ * gets the canonical rewrite instead (an empty row cannot be written pipe-less
+ * without a leading space, which would read as a container prefix). Null when
+ * the table cannot be rewritten (inside a container).
+ */
+export function appendRowChange(p: ParsedTable): TableChange | null {
+  if (!p.rewritable) return null;
+  return wholeTable(
+    p,
+    (L, cols, lines) => lines.push(blankRowText(L, cols)),
+    (data) => data.body.push(new Array(data.aligns.length).fill("")),
+  );
+}
+
+/**
+ * Run a row-level rewrite on a table's lines in its own style, or — for a table
+ * that is not piped on every row — the canonical one on its normalized data.
+ * Returns the whole-table change (callers place the caret by re-parsing it).
+ */
+function wholeTable(
+  p: ParsedTable,
+  styled: (L: TableLayout, cols: number, lines: string[]) => void,
+  canonical: (data: TableData) => void,
+): TableChange {
+  const rows = rawRows(p.source, p.from);
+  if (!allPiped(rows)) {
+    const data = tableDataFromParsed(p);
+    canonical(data);
+    return { from: p.from, to: p.to, insert: serializeTable(data) };
+  }
+  const L = tableLayout(rows);
+  const cols = Math.max(p.aligns.length, ...p.rows.map((r) => r.cells.length));
+  const lines = rows.map((r) => r.text);
+  styled(L, cols, lines);
+  return { from: p.from, to: p.to, insert: lines.join("\n") };
+}
+
+/**
+ * Apply a structural op at the cursor's cell and return the whole-table text
+ * plus the new cursor (spec: editor-fidelity N2). The op rewrites only what it
+ * structurally affects, in the table's own style: a row op moves / inserts /
+ * deletes lines and leaves every other line byte for byte; a column op splices
+ * that column's segment in every row and keeps each row's other segments as
+ * written; toggling alignment rewrites that column's delimiter marker (same
+ * length when it fits; when it must grow in an aligned table, that column is
+ * widened). `format` is the one op that rewrites the whole table to the
+ * canonical aligned form — re-aligning is what it is for. A table without outer
+ * pipes on every row falls back to the canonical rewrite for every op.
+ *
+ * Returns null when the text isn't a table or the op is a boundary no-op (move
+ * at an edge). Deleting the last column removes the whole table (spec:
+ * 删除列的边界安全).
  */
 export function tableStructEdit(
   tableText: string,
@@ -413,6 +847,121 @@ export function tableStructEdit(
   const p = parseTable(tableText, tableFrom);
   if (!p || !p.rewritable) return null;
   const { r, c } = locate(p, cursor);
+  const rows = rawRows(tableText, tableFrom);
+  const insert =
+    op === "format" || !allPiped(rows) ? canonicalStructEdit(p, r, c, op) : styledStructEdit(p, rows, r, c, op);
+  if (!insert) return null;
+  if (insert.text === "") return { from: p.from, to: p.to, insert: "", anchor: p.from, head: p.from };
+  const cell = cellAt(parseTable(insert.text, tableFrom)!, insert.row, insert.col);
+  return { from: p.from, to: p.to, insert: insert.text, anchor: cell.from, head: cell.to };
+}
+
+type OpResult = { text: string; row: number; col: number } | null;
+
+/** The op in the table's own style (every row piped). */
+function styledStructEdit(p: ParsedTable, rows: RawRow[], r: number, c: number, op: TableOp): OpResult {
+  const L = tableLayout(rows);
+  const cols = Math.max(p.aligns.length, ...p.rows.map((row) => row.cells.length));
+  const lines = rows.map((row) => row.text);
+  const body = p.rows.length - 1;
+  const done = (row: number, col: number): OpResult => ({ text: lines.join("\n"), row, col });
+  const swapLines = (a: number, b: number) => ([lines[a], lines[b]] = [lines[b], lines[a]]);
+
+  /** Each row's segments, padded with blanks up to `n` (a ragged row lacks some). */
+  const segsUpTo = (li: number, n: number): string[] => {
+    const row = rows[li];
+    const segs = segTexts(row);
+    const aligned = L.aligned && L.rowAligned[li];
+    while (segs.length < n) {
+      const k = segs.length;
+      segs.push(row.delimiter ? blankDelimSeg(L, aligned, L.widths[k]) : blankSeg(L, k, aligned, L.widths[k], row));
+    }
+    return segs;
+  };
+  const eachRow = (f: (segs: string[], li: number, aligned: boolean) => string[] | null) => {
+    rows.forEach((row, li) => {
+      const next = f(segTexts(row), li, L.aligned && L.rowAligned[li]);
+      if (next) lines[li] = rowWith(row, next);
+    });
+  };
+
+  switch (op) {
+    case "insertRowBelow":
+      lines.splice(r === 0 ? 2 : r + 2, 0, blankRowText(L, cols));
+      return done(r + 1, c);
+    case "insertRowAbove":
+      lines.splice(r === 0 ? 2 : r + 1, 0, blankRowText(L, cols));
+      return done(r === 0 ? 1 : r, c);
+    case "deleteRow":
+      if (r === 0) return null; // header defines the table — never deleted alone
+      lines.splice(r + 1, 1);
+      return done(Math.min(r, body - 1), c);
+    case "moveRowUp":
+      if (r <= 1) return null; // header, or first body can't cross the header
+      swapLines(r + 1, r);
+      return done(r - 1, c);
+    case "moveRowDown":
+      if (r === 0 || r >= body) return null;
+      swapLines(r + 1, r + 2);
+      return done(r + 1, c);
+    case "insertColLeft":
+    case "insertColRight": {
+      const ci = op === "insertColLeft" ? c : c + 1;
+      const width = L.aligned ? L.mL + MIN_COL_WIDTH + L.mR : null;
+      rows.forEach((row, li) => {
+        const aligned = L.aligned && L.rowAligned[li];
+        const segs = segsUpTo(li, ci);
+        segs.splice(ci, 0, row.delimiter ? blankDelimSeg(L, aligned, width) : blankSeg(L, ci, aligned, width, row));
+        lines[li] = rowWith(row, segs);
+      });
+      return done(r, ci);
+    }
+    case "deleteColumn":
+      if (cols <= 1) return { text: "", row: 0, col: 0 };
+      eachRow((segs) => (segs.length > c ? (segs.splice(c, 1), segs) : null));
+      return done(r, Math.min(c, cols - 2));
+    case "moveColLeft":
+    case "moveColRight": {
+      const other = op === "moveColLeft" ? c - 1 : c + 1;
+      if (other < 0 || other >= cols) return null;
+      rows.forEach((row, li) => {
+        const segs = segsUpTo(li, Math.max(c, other) + 1);
+        [segs[c], segs[other]] = [segs[other], segs[c]];
+        lines[li] = rowWith(row, segs);
+      });
+      return done(r, other);
+    }
+    case "toggleAlign": {
+      const delim = rows[1];
+      const segs = segsUpTo(1, c + 1);
+      const raw = segs[c];
+      const marker = raw.trim();
+      const lead = raw.length - raw.trimStart().length;
+      const trail = raw.length - lead - marker.length;
+      const align = nextAlign(p.aligns[c] ?? "none");
+      const need = align === "center" ? 3 : align === "none" ? 1 : 2;
+      const grow = Math.max(0, need - marker.length);
+      // Room inside the segment's own padding first, then (aligned) widen the column.
+      const fromPad = Math.min(grow, Math.max(0, trail - L.dR));
+      segs[c] = " ".repeat(lead) + delimMarker(align, marker.length + grow) + " ".repeat(trail - fromPad);
+      lines[1] = rowWith(delim, segs);
+      const rest = grow - fromPad;
+      if (rest > 0 && L.aligned && L.rowAligned[1] && L.widths[c] !== null) {
+        rows.forEach((row, li) => {
+          const seg = row.segs[c];
+          if (li === 1 || !seg || !L.rowAligned[li] || seg.width !== L.widths[c]) return;
+          lines[li] = applyTableChanges(row.text, row.from, widen(L, seg, false, rest));
+        });
+      }
+      return done(r, c);
+    }
+    default:
+      return null;
+  }
+}
+
+/** The op on the table's normalized data, serialized canonical (Format table; pipe-less tables). */
+function canonicalStructEdit(p: ParsedTable, r: number, c: number, op: TableOp): OpResult {
   const data = tableDataFromParsed(p);
   const cols = data.aligns.length;
   const emptyRow = () => new Array(cols).fill("");
@@ -431,12 +980,12 @@ export function tableStructEdit(
       tr = r === 0 ? 1 : r;
       break;
     case "deleteRow":
-      if (r === 0) return null; // header defines the table — never deleted alone
+      if (r === 0) return null;
       data.body.splice(r - 1, 1);
       tr = Math.min(r, data.body.length);
       break;
     case "moveRowUp":
-      if (r <= 1) return null; // header, or first body can't cross the header
+      if (r <= 1) return null;
       [data.body[r - 2], data.body[r - 1]] = [data.body[r - 1], data.body[r - 2]];
       tr = r - 1;
       break;
@@ -453,7 +1002,7 @@ export function tableStructEdit(
       break;
     }
     case "deleteColumn":
-      if (cols <= 1) return { from: p.from, to: p.to, insert: "", anchor: p.from, head: p.from };
+      if (cols <= 1) return { text: "", row: 0, col: 0 };
       spliceCol(data, c, 1);
       tc = Math.min(c, cols - 2);
       break;
@@ -471,13 +1020,10 @@ export function tableStructEdit(
       data.aligns[c] = nextAlign(data.aligns[c]);
       break;
   }
-
-  const insert = serializeTable(data);
-  const cell = cellAt(parseTable(insert, tableFrom)!, tr, tc);
-  return { from: p.from, to: p.to, insert, anchor: cell.from, head: cell.to };
+  return { text: serializeTable(data), row: tr, col: tc };
 }
 
-// --- reflow (task 3) --------------------------------------------------------
+// --- Format table's canonical form -----------------------------------------
 
 export interface TableChange {
   from: number;
@@ -486,10 +1032,11 @@ export interface TableChange {
 }
 
 /**
- * Canonicalize a table's pipe layout, but ONLY if it isn't already canonical.
- * Returns null when the text isn't a table OR is already aligned — so wiring it
- * to the "cursor left the table" boundary produces no empty change, no undo
- * entry, and no autosave churn (spec: 已对齐离开无改动; design D1 idempotency).
+ * The canonical aligned form of a table, but ONLY if it isn't already canonical
+ * (what Format table writes). Null when the text isn't a table, can't be
+ * rewritten, or is already canonical. Editing no longer runs it: ending a cell
+ * edit settles only the edited cells (`settleCellsChange`, change:
+ * editor-edit-locality).
  */
 export function reflowChangeIfNeeded(tableText: string, tableFrom: number): TableChange | null {
   const p = parseTable(tableText, tableFrom);
@@ -497,33 +1044,6 @@ export function reflowChangeIfNeeded(tableText: string, tableFrom: number): Tabl
   const canonical = serializeTable(tableDataFromParsed(p));
   if (canonical === tableText) return null;
   return { from: tableFrom, to: tableFrom + tableText.length, insert: canonical };
-}
-
-/**
- * Where `pos` lands once `reflow` (from `reflowChangeIfNeeded` on the table
- * `oldText` at `tableFrom`) is applied: a position inside a cell's text keeps
- * its cell and its offset in it (a reflow only pads, it never changes a cell's
- * text). The reflow replaces the whole table, so mapping through the change
- * would drop every inside position at the table's start. Anything else (a
- * pipe, padding, the delimiter row, outside the table) maps as the change maps
- * it. Pure.
- */
-export function posAfterReflow(oldText: string, tableFrom: number, reflow: TableChange, pos: number): number {
-  const before = parseTable(oldText, tableFrom);
-  const after = parseTable(reflow.insert, reflow.from);
-  const shift = reflow.insert.length - (reflow.to - reflow.from);
-  if (pos >= reflow.to) return pos + shift;
-  if (pos <= reflow.from) return pos;
-  if (before && after) {
-    for (const [ri, row] of before.rows.entries()) {
-      for (const [ci, cell] of row.cells.entries()) {
-        if (pos < cell.from || pos > cell.to) continue;
-        const target = cellSourceRange(after, ri, ci);
-        if (target) return Math.min(target.from + (pos - cell.from), target.to);
-      }
-    }
-  }
-  return reflow.from;
 }
 
 // --- insert (change: table-insert-command) ----------------------------------
@@ -575,7 +1095,7 @@ function blockEndOffset(doc: string, cursor: number): number {
  * Insert a minimal legal GFM table at a safe block boundary near `cursor`
  * (spec: 表格插入). When `tableRange` is given (cursor sits inside a table) the
  * new table anchors AFTER that table block so existing pipes are never split.
- * The seed is already canonical, so a later 离表 reflow is a no-op (idempotent).
+ * The seed is canonical; leaving it untyped writes nothing.
  * Returns a pure insertion (`from === to`) with the caret in the first header cell.
  */
 export function insertTableChange(
@@ -638,16 +1158,16 @@ export function cellSourceRange(
  * `"input"` is the trap here: it reads right and is WORSE than omitting the field,
  * which history treats as joinable. Pinned in `tableEdit.test.ts`.
  *
- * Discrete table commands (structural edits, reflow on leave) deliberately do NOT
- * use this — see `runTableOp` / `tableReflowOnEditEnd`.
+ * Discrete table commands (structural edits, the settle on leave) deliberately do NOT
+ * use this — see `runTableOp` / `tableSettleOnEditEnd`.
  */
 export const CELL_SYNC_USER_EVENT = "input.type";
 
 /**
  * Precise change replacing ONE cell's source with `text` (task 1.1). The
  * in-place input dispatches this per keystroke to sync into the document WITHOUT
- * reflow — only the cell's content span changes, so the table stays valid GFM and
- * column re-alignment is deferred to session end (spec: 单元格原位编辑 / 实时同步).
+ * re-padding — only the cell's content span changes, so the table stays valid GFM and
+ * the edited cells are settled at session end (spec: 单元格原位编辑 / 实时同步).
  * Returns null when (row, col) is out of range.
  */
 export function cellEditChange(
@@ -669,16 +1189,15 @@ export type GridNav =
 
 /** Append an empty body row and land the editor in it (col clamped to width). */
 function expandRow(p: ParsedTable, col: number): GridNav {
-  if (!p.rewritable) return { kind: "noop" };
-  const data = tableDataFromParsed(p);
-  data.body.push(new Array(data.aligns.length).fill(""));
-  const insert = serializeTable(data);
+  const change = appendRowChange(p);
+  if (!change) return { kind: "noop" };
+  const cols = Math.max(p.aligns.length, ...p.rows.map((r) => r.cells.length));
   return {
     // The new body row's index over header+body == the current rows.length.
     kind: "expand",
-    change: { from: p.from, to: p.to, insert },
+    change,
     row: p.rows.length,
-    col: Math.min(col, Math.max(0, data.aligns.length - 1)),
+    col: Math.min(col, Math.max(0, cols - 1)),
   };
 }
 

@@ -14,8 +14,9 @@ import { listFiles, repoPath } from "../../scripts/lib/repoFiles.mjs";
  *   `createContextualFragment`, `DOMParser`, `document.write`, `srcdoc`,
  *   `setHTMLUnsafe`, `parseHTMLUnsafe` — outside `editor/markup.ts` (whose
  *   `setMarkup` only takes sanitised `SafeMarkup`);
- * - U2: a cast to `SafeMarkup` outside `editor/markup.ts` (the brand is minted
- *   only by the sanitiser);
+ * - U2: a cast to `SafeMarkup` outside the sanitiser — `editor/markup.ts` and
+ *   its diagram profile `editor/diagramMarkup.ts`, which loads with the diagram
+ *   code (the brand is minted only by the sanitiser);
  * - U3: an element that navigates or runs content — `<a>`, `<iframe>`,
  *   `<script>`, `<object>`, `<embed>`, `<form>` — or a navigation of the page
  *   (`window.open`, `location…`): links go only through `followLink` → the
@@ -35,6 +36,8 @@ import { listFiles, repoPath } from "../../scripts/lib/repoFiles.mjs";
 
 const SRC = join(__dirname, "..");
 const OWNER = "editor/markup.ts";
+/** The sanitiser's modules: the core (with the one sink) and the diagram profile. */
+const MINTERS = new Set([OWNER, "editor/diagramMarkup.ts"]);
 const RAW_HTML_READERS = new Set([
   "editor/spellProse.ts",
   "editor/inlineCell.ts",
@@ -68,7 +71,7 @@ export function violations(files: { path: string; code: string }[]): string[] {
       .forEach((line, i) => {
         const at = `${path}:${i + 1}`;
         if (path !== OWNER && SINK.test(line)) found.push(`${at}: U1 markup sink outside ${OWNER} (use setMarkup with sanitised markup)`);
-        if (path !== OWNER && CAST.test(line)) found.push(`${at}: U2 SafeMarkup minted outside ${OWNER}`);
+        if (!MINTERS.has(path) && CAST.test(line)) found.push(`${at}: U2 SafeMarkup minted outside the sanitiser (${[...MINTERS].join(", ")})`);
         if (LIVE_ELEMENT.test(line)) found.push(`${at}: U3 an element that navigates or runs content`);
         if (NAVIGATE.test(line)) found.push(`${at}: U3 the editor navigates the page (links go through followLink → the host)`);
         if (!RAW_HTML_READERS.has(path) && RAW_HTML_NODE.test(line)) found.push(`${at}: U4 raw-HTML node named outside its source-only readers`);
@@ -84,7 +87,7 @@ describe("untrusted-content gate", () => {
       code: readFileSync(p, "utf8"),
     }));
     // The scan is not empty, and the chokepoint exists and is the one sink.
-    expect(files.some((f) => f.path === OWNER)).toBe(true);
+    for (const minter of MINTERS) expect(files.some((f) => f.path === minter)).toBe(true);
     expect(files.filter((f) => f.path.startsWith("editor/")).length).toBeGreaterThan(50);
     expect(violations(files)).toEqual([]);
   });
@@ -109,6 +112,8 @@ describe("untrusted-content gate", () => {
     const probe = (code: string, path = "editor/widgets.ts") => violations([{ path, code }]);
     expect(probe("el.inner" + "HTML = markup;", OWNER)).toEqual([]);
     expect(probe("return x as Safe" + "Markup;", OWNER)).toEqual([]);
+    expect(probe("return x as Safe" + "Markup;", "editor/diagramMarkup.ts")).toEqual([]);
+    expect(probe("el.inner" + "HTML = markup;", "editor/diagramMarkup.ts")).toHaveLength(1);
     expect(probe("// el.inner" + "HTML = x used to live here\nconst y = 1;")).toEqual([]);
     expect(probe('const s = document.createElement("span");')).toEqual([]);
     expect(probe('const t = document.createElement("table");')).toEqual([]);

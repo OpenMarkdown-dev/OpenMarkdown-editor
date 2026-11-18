@@ -45,17 +45,19 @@ const RENDERER_MODULE = (path: string) =>
   (path.startsWith("editor/blocks/") && path !== "editor/blocks/render.ts") ||
   path === "editor/math.ts" ||
   path === "editor/mermaid.ts" ||
+  path === "editor/mermaidRender.ts" ||
   path === "editor/widgets.ts";
 
 /**
  * The named exceptions to R2: each renderer's lazy-load `.catch` — a failed
  * LOAD is not one place that cannot render (everything stays source,
- * unmarked). Module → its load expression: math.ts imports temml itself;
- * mermaid.ts calls the injected loader (`./mermaidImport.ts` holds the one
+ * unmarked). Module → its load expression: math.ts and mermaid.ts each call
+ * the loader their entry injected (`./mathImport.ts` holds the one
+ * `import("temml")`); mermaid.ts calls the injected loader (`./mermaidImport.ts` holds the one
  * `import("mermaid")`, so the diagram-free entry never reaches it).
  */
 const LOADERS: Record<string, RegExp> = {
-  "editor/math.ts": /\bimport\(\s*["']temml["']\s*\)/,
+  "editor/math.ts": /^\s*load\(\)$/,
   "editor/mermaid.ts": /\bloaded = load\(\)/,
 };
 const LOADER_CATCH_WINDOW = 8;
@@ -182,7 +184,7 @@ describe("render-fallback gate", () => {
 
   it("leaves the wrapper, the loader, the theme, other layers and comments alone", () => {
     const cases: [string, string][] = [
-      ["editor/math.ts", 'import("temml")\n  .then((m) => use(m))\n  .catch((e: unknown) => {'],
+      ["editor/math.ts", "  load()\n    .then((m) => use(m))\n    .catch((e: unknown) => {"],
       ["editor/mermaid.ts", 'loaded = load()\n  .catch((e: unknown) => {'],
       ["editor/math.ts", "temml.renderToString(tex, {\n  displayMode,\n  throwOnError: true,\n});"],
       ["editor/blocks/render.ts", "try {\n  return ok(render());\n} catch (e) {"],

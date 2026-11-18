@@ -19,9 +19,9 @@
 export { createEditorState, mountEditor } from "./editor/index";
 export type { EditorStateOptions, MarkdownEditor } from "./editor/index";
 export { configureEditorEnvironment } from "./editor/environment";
-export type { EditorEnvironment, ColorScheme, SpellService, SpellMiss } from "./editor/environment";
+export type { EditorEnvironment, EditorOwnEnvironment, ColorScheme, ColorSchemeSource, SpellService, SpellMiss, MathRenderer, DiagramRenderer } from "./editor/environment";
 export type { EditorHost, EditorMode } from "./editor/host";
 export type { OutlineItem } from "./editor/outline";
 export type { EditorLang } from "./editor/strings";
-export { openMarkdownFile, saveMarkdownFile, InvalidUtf8Error } from "./editor/fileBytes";
-export type { MarkdownFile, LineEnding } from "./editor/fileBytes";
+export { openMarkdownFile, saveMarkdownFile, openMarkdownText, saveMarkdownText, InvalidUtf8Error } from "./editor/fileBytes";
+export type { MarkdownFile, MarkdownText, LineEnding } from "./editor/fileBytes";
