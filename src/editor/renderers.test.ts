@@ -91,6 +91,19 @@ describe("which diagram renderer a state draws with", () => {
   });
 });
 
+describe("a host's flowchart with arrowheads (markers named <root id>_…)", () => {
+  it("draws through renderDiagram, its markers renamed with the root", async () => {
+    const svg =
+      '<svg id="d" xmlns="http://www.w3.org/2000/svg"><defs><marker id="d_end"><path d="M0 0L1 1"/></marker></defs>' +
+      '<path d="M0 0" marker-end="url(#d_end)"/></svg>';
+    const drawer = diagramDrawerOf(createBare({ environment: { renderDiagram: async () => svg } }))!;
+    await new Promise<void>((done) => requestMermaid("graph LR\n  a --> b", "light", drawer, done, () => true));
+    const shown = shownMermaid("graph LR\n  a --> b", "light", drawer.id);
+    expect(shown).toMatchObject({ kind: "rendered" });
+    expect((shown as { value: string }).value).toMatch(/marker-end="url\(#om-mermaid-\d+_end\)"/);
+  });
+});
+
 describe("a new environment redraws formulas and diagrams", () => {
   it("reconfigure with an environment carries the redraw effects", () => {
     const s = createBare({});

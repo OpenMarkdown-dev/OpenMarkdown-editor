@@ -5,7 +5,7 @@ import { attemptRenderAsync } from "./blocks/render";
 import { mermaidMarkup, vetDiagramCss } from "./diagramMarkup";
 import { UnsafeMarkupError } from "./markup";
 import type { MermaidModule } from "./mermaid";
-import { mermaidConfig, normalizeDiagram, renderWith } from "./mermaidRender";
+import { adoptDiagram, hostDiagram, mermaidConfig, normalizeDiagram, renderWith } from "./mermaidRender";
 
 /**
  * The mermaid profile of the editor's one HTML sink (change: editor-mermaid,
@@ -188,6 +188,54 @@ describe("what a diagram keeps", () => {
     const out = mermaidMarkup(normalizeDiagram(real));
     expect(out).toContain('aria-roledescription="sequence"');
     expect(out).not.toMatch(/\shref=|xlink:|\son\w+=|<a[\s>]|foreignObject|position\s*:|z-index/);
+  });
+});
+
+describe("adoptDiagram — a host's diagram takes the editor's root id", () => {
+  const ID = "om-mermaid-9";
+  it.each([
+    ["_", 'id="d_end"', "url(#d_end)"],
+    ["-", 'id="d-end"', "url(#d-end)"],
+    [".", 'id="d.end"', "url(#d.end)"],
+    [":", 'id="d:end"', "url(#d:end)"],
+  ])("an id or reference that is the root id then %s is derived from it, and renamed", (_sep, idAttr, ref) => {
+    const out = adoptDiagram(`<svg id="d"><marker ${idAttr}/><path marker-end="${ref}"/></svg>`, ID);
+    expect(out).toContain(`<svg id="${ID}"`);
+    expect(out).toContain(idAttr.replace('"d', `"${ID}`));
+    expect(out).toContain(ref.replace("#d", `#${ID}`));
+  });
+
+  it("the root id as a prefix of a longer name is not the root: d10 under root d1 stays", () => {
+    const out = adoptDiagram('<svg id="d1"><g id="d10"/><path fill="url(#d10)"/><path fill="url(#d1_g)"/></svg>', ID);
+    expect(out).toContain('id="d10"');
+    expect(out).toContain("url(#d10)");
+    expect(out).toContain(`url(#${ID}_g)`);
+  });
+
+  it("the same rule renames the root in its <style>: #d, #d .node, #d_x, #d:hover", () => {
+    const out = adoptDiagram("<svg id=\"d\"><style>#d{fill:red;}#d .node{fill:red;}#d_x{fill:red;}#d:hover{fill:red;}#dx{fill:red;}</style></svg>", ID);
+    expect(out).toContain(`#${ID}{`);
+    expect(out).toContain(`#${ID} .node{`);
+    expect(out).toContain(`#${ID}_x{`);
+    expect(out).toContain(`#${ID}:hover{`);
+    expect(out).toContain("#dx{");
+  });
+
+  it("a host diagram whose arrowhead marker is <id>_… draws (the 0.2.0 blocker)", () => {
+    const drawn = hostDiagram(
+      '<svg id="d" xmlns="http://www.w3.org/2000/svg"><defs><marker id="d_end"><path d="M0 0L1 1"/></marker></defs><path d="M0 0" marker-end="url(#d_end)"/></svg>',
+    );
+    expect(drawn).toMatch(/marker-end="url\(#om-mermaid-\d+_end\)"/);
+  });
+
+  it("a real mermaid 11 flowchart with arrowheads, rendered by a host under its own id, draws", () => {
+    const real = readFileSync(join(__dirname, "testdata/mermaid-flowchart-host.svg"), "utf8");
+    expect(real).toMatch(/marker-end="url\(#host-diagram-1_flowchart-v2-pointEnd\)"/);
+    const drawn = hostDiagram(real);
+    expect(drawn).not.toContain("host-diagram");
+    expect(drawn).toMatch(/<marker[^>]* id="om-mermaid-\d+_flowchart-v2-pointEnd"/);
+    expect(drawn).toMatch(/marker-end="url\(#om-mermaid-\d+_flowchart-v2-pointEnd\)"/);
+    expect(drawn).toContain('aria-roledescription="flowchart-v2"');
   });
 });
 

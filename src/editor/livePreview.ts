@@ -38,6 +38,8 @@ import { nestedPreview } from "./blocks/nested";
 import { followLink } from "./linkNavigate";
 import { clickFollowsLink } from "./linkGesture";
 import { imageEpoch, imageEpochField } from "./imageRefresh";
+import { markdownHighlightStyle } from "./theme";
+import { tags } from "@lezer/highlight";
 import { escapeMark, FORMATTING_MARKS, linkTextIsEmpty, listMarkStandIn } from "./previewConceal";
 import { isLink, linkMarkConcealable, referenceLabels, type ReferenceLabels, type SourceReader } from "./linkRefs";
 import { decorateInsets } from "./insets/decorate";
@@ -70,6 +72,8 @@ const WITHIN = { strict: false };
  * `@agent`; `.om-agent` is themed with `--agent` in theme.ts.
  */
 const agentMark = Decoration.mark({ class: "om-agent" });
+/** A revealed mark the tree does not tag as one (an escape's backslash): the marks' own highlight style. */
+const revealedMark = Decoration.mark({ class: markdownHighlightStyle.style([tags.processingInstruction])! });
 
 
 interface BuildResult {
@@ -79,7 +83,7 @@ interface BuildResult {
   revealed: boolean;
 }
 
-class LivePreviewPluginValue {
+export class LivePreviewPluginValue {
   decorations: DecorationSet;
   hidden: DecorationSet;
 
@@ -239,10 +243,11 @@ class LivePreviewPluginValue {
 
     switch (name) {
       case "Escape": {
-        // `\*` shows `*`: the backslash is markup, revealed while the escape is touched.
-        if (touches(node.from, node.to)) return;
+        // `\*` shows `*`: the backslash is markup — hidden, or, while the
+        // escape is touched, shown as a mark (the escaped character is text).
         const mark = escapeMark(node);
-        conceal(mark.from, mark.to, hide, { from: node.from, to: node.to });
+        if (touches(node.from, node.to)) deco.push(revealedMark.range(mark.from, mark.to));
+        else conceal(mark.from, mark.to, hide, { from: node.from, to: node.to });
         return;
       }
 

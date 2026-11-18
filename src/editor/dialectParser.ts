@@ -1,6 +1,7 @@
 import { commonmarkLanguage } from "@codemirror/lang-markdown";
 import { foldNodeProp } from "@codemirror/language";
-import { GFM, type MarkdownExtension, type MarkdownParser } from "@lezer/markdown";
+import { styleTags, tags as t } from "@lezer/highlight";
+import { GFM, type MarkdownConfig, type MarkdownExtension, type MarkdownParser } from "@lezer/markdown";
 import { mathMarkdown } from "./math";
 import { frontmatterMarkdown } from "./frontmatterParse";
 import { strikethrough } from "./strikethrough";
@@ -38,8 +39,21 @@ const blockFolds: MarkdownExtension = {
   ],
 };
 
+/**
+ * A backslash escape is text: `\*` is the character `*` (spec:
+ * live-preview-editor / 转义反斜杠随标记规则隐藏). The library tags the whole
+ * `Escape` node `escape`, a code-token tag the highlight style paints in a
+ * syntax colour — so off the caret `\*not\*` showed a tinted `*` that read as
+ * emphasis markup. Here the node is plain `content`; its one mark, the
+ * backslash (`escapeMark`, `previewConceal.ts`), is hidden off the caret and
+ * painted as a mark when revealed (`livePreview.ts`). Not a dialect: no
+ * syntax changes, only the node's style tag.
+ */
+const escapeIsText: MarkdownConfig = { props: [styleTags({ Escape: t.content })] };
+
 export const dialectBase = commonmarkLanguage;
 export const dialectExtensions: MarkdownExtension[] = [
+  escapeIsText,
   GFM,
   { remove: ["Strikethrough"] },
   strikethrough,

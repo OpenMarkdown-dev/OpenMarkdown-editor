@@ -308,7 +308,7 @@ export const SYNTAX: readonly SyntaxEntry[] = [
     support: "rendered",
     dialect: "math-tex-delimiters",
     mathTable: true,
-    note: "The delimiters LLMs write. `\\[ … \\]` is block math when it is a paragraph of its own; on one line it needs a space inside both brackets. Otherwise these stay CommonMark escapes.",
+    note: "The delimiters LLMs write. `\\[ … \\]` is block math when it is a paragraph of its own; on one line it needs a space inside both brackets. Otherwise these stay CommonMark escapes: `\\[ … \\]` in the middle of a line (sharing its paragraph with other text) is never math, by design, and shows as its text `[ … ]`, the backslashes hidden off the caret. (Pandoc's `tex_math_single_backslash` reads it as display math; the editor keeps CommonMark's reading there.)",
     vectors: [
       { md: "\\(x^2\\) inline", html: "<math>x^2</math> inline" },
       { md: "a \\( x \\) b", html: "a <math>x</math> b" },
@@ -318,6 +318,7 @@ export const SYNTAX: readonly SyntaxEntry[] = [
       { md: "\\[x\\]", html: "[x]" },
       { md: "- \\[x\\] item", html: "<ul>\n<li>[x] item</li>\n</ul>" },
       { md: "\\[ a \\] b \\[ c \\]", html: "[ a ] b [ c ]" },
+      { md: "Let \\[ x^2 \\] be the area.", html: "Let [ x^2 ] be the area." },
       { md: "text\n\\[\nx\n\\]", html: "text\n[\nx\n]" },
     ],
   },

@@ -74,6 +74,20 @@ export function diagramDeclarationProblem(property: string, value: string, onRoo
 
 /** The id mermaid gives the diagram's root `<svg>` (`renderWith` in `./mermaid.ts`). */
 const MERMAID_ROOT_ID = /^om-mermaid-\d+$/;
+
+/**
+ * THE rule for "this name is the diagram's root id, or derived from it": the
+ * root id, then the end or a character that is not a letter or digit (`_`,
+ * `-`, `.`, `:` …). So `d`, `d_flowchart-v2-pointEnd` (mermaid's markers),
+ * `d-g`, `d.x` are the root `d`'s; `d10` is not root `d1`'s. One definition:
+ * the sanitiser keeps ids by it (`mermaidMarkup`), and a host's diagram is
+ * renamed by it (`adoptDiagram` in `./mermaidRender.ts`). As a regex source,
+ * for the place after the root id: the end, or no letter or digit next.
+ */
+export const AFTER_ROOT_ID = "(?![A-Za-z0-9])";
+export function derivedFromRoot(name: string, rootId: string): boolean {
+  return name.startsWith(rootId) && new RegExp(`^${AFTER_ROOT_ID}`).test(name.slice(rootId.length));
+}
 /** Never dropped quietly: a link, an event handler, a resource load. */
 const MERMAID_REFUSED_ATTR = /^(on|xlink:|xml:base$|href$|src$|srcset$|action$|formaction$|background$|ping$)/i;
 const SCRIPT_SCHEME = /(?:java|vb|live)script\s*:|data\s*:/i;
@@ -176,9 +190,12 @@ export function mermaidMarkup(svg: string): SafeMarkup {
   const refuse = (why: string): never => {
     throw new UnsafeMarkupError(`diagram: ${why}`);
   };
-  /** `om-mermaid-3` itself, or `om-mermaid-3-…` / `om-mermaid-3_…` — never `om-mermaid-30`. */
-  const underRoot = (id: string) =>
-    rootId !== null && id.startsWith(rootId) && (id.length === rootId.length || /^[-_]/.test(id.slice(rootId.length)));
+  /**
+   * `om-mermaid-3` itself, or `om-mermaid-3-…` / `om-mermaid-3_…` — never
+   * `om-mermaid-30` (`derivedFromRoot`); and only `[\w-]` names, so a kept id
+   * is one CSS and `url(#…)` can name.
+   */
+  const underRoot = (id: string) => rootId !== null && derivedFromRoot(id, rootId) && /^[\w-]+$/.test(id);
   const profile: MarkupAllow = {
     tags: new Set(MERMAID_TAGS),
     attrs: new Set(MERMAID_ATTRS),

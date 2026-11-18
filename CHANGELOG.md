@@ -7,6 +7,38 @@ while the version is 0.x, a minor version may change the public API
 The top entry's version must equal `package.json`'s: the export and the release workflow
 both refuse to publish otherwise.
 
+## 0.2.1 — 2026-11-18
+
+What re-running the five integrations on 0.2.0 found.
+
+### Fixed
+
+- **A host's `renderDiagram` draws flowcharts with arrowheads.** In 0.2.0 every Mermaid
+  flowchart with an arrow, rendered by your own Mermaid, showed its source with the failure mark
+  ("not a local reference"): the editor renamed the diagram's root id but not the markers
+  Mermaid names after it (`<id>_flowchart-v2-pointEnd`). Every id and `#` reference that is the
+  root id followed by `_`, `-`, `.`, `:` or nothing is now renamed with it; a longer name such
+  as `d10` beside root `d1` is left alone. The built-in Mermaid was not affected.
+- **Escaped characters are plain text.** Off the caret, `\*not\*` drew its `*` in a code
+  colour, so it looked like emphasis markup. Every escaped
+  character (`\*`, `\_`, `\[`, `` \` ``, `\#`, …) now has the colour of the text around it;
+  only the backslash is markup, hidden off the caret and coloured like `**` when revealed. In
+  source mode the whole escape is plain text.
+
+### Docs
+
+- [Bundling](docs/guides/bundling.md): the first load per bundler. About 185 KB gzipped with
+  Vite or Rollup; about 250 KB with esbuild's `--splitting`, which cannot split the HTML grammar
+  out of `@codemirror/lang-markdown`. The browser build (`/browser`) takes no `codeLanguages`:
+  it does not export `LanguageDescription`, so its code blocks are unhighlighted.
+- [Syntax](docs/guides/syntax.md): `\[ … \]` in the middle of a line is never math, by design.
+- [Images](docs/guides/images.md): when `uploadImage` stores an image where it is not served
+  yet (a CMS draft store before publishing), resolve the new link yourself in `resolveImage`.
+- [Install](docs/getting-started/install.md#release-age-gates): a release-age gate falls back to
+  an older version only inside your version range (`^0.2.0` fails until 0.2.0 is old enough),
+  and bun's `minimumReleaseAgeExcludes` takes exact package names, not patterns.
+- The npm keywords no longer list `wysiwyg`, `katex` or `react`.
+
 ## 0.2.0 — 2026-11-18
 
 What five integrations of 0.1.3 (a git CMS, a wiki, two agent UIs and a document editor) asked

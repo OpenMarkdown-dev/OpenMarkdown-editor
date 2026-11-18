@@ -792,8 +792,8 @@ export const editorStyleFoundation = [editorTokenDefaults, ...editorStyleBase];
 /** Both halves, for the outer editor, on the style foundation. */
 export const editorTheme = [...editorStyleFoundation, editorLayoutTheme, editorMarkTheme];
 
-export const markdownHighlighting = syntaxHighlighting(
-  HighlightStyle.define([
+/** The live editor's highlight style, installed as `markdownHighlighting` (the preview borrows its mark class for an escape's revealed backslash). */
+export const markdownHighlightStyle = HighlightStyle.define([
     // Heading sizes: the type scale (./tokens.ts TYPE_SCALE), shared with the
     // rendered-HTML stylesheet (change: render-export).
     { tag: t.heading1, ...headingType(1) },
@@ -847,8 +847,8 @@ export const markdownHighlighting = syntaxHighlighting(
     { tag: t.regexp, color: "var(--ome-syntax-string)" },
     { tag: t.escape, color: "var(--ome-syntax-number)" },
     { tag: [t.className, t.namespace], color: "var(--ome-syntax-type)" },
-  ]),
-);
+  ]);
+export const markdownHighlighting = syntaxHighlighting(markdownHighlightStyle);
 
 /**
  * Source-mode variant: same tag→color/weight mapping as markdownHighlighting

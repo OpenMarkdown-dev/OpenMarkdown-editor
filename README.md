@@ -95,8 +95,10 @@ CodeMirror and Lezer are **peer dependencies**: your page must hold exactly one 
 later install peers for you. `temml` (math) and `mermaid` (diagrams, `^11`) are regular
 dependencies, declared as ranges so your app can share its copy. They are loaded with
 `import()` only when a document contains math or a diagram, and your bundler splits them into
-separate chunks. A project with a release-age gate (bun's `minimumReleaseAge`, pnpm's) installs
-the newest version older than its window ([install](https://github.com/OpenMarkdown-dev/OpenMarkdown-editor/blob/main/docs/getting-started/install.md#release-age-gates)).
+separate chunks. A project with a release-age gate (bun's `minimumReleaseAge`, pnpm's) refuses a
+version younger than its window. It falls back to an older version only when your version range
+allows one: with `^0.2.0` and 0.2.0 the newest release, the install fails until 0.2.0 is old enough
+([install](https://github.com/OpenMarkdown-dev/OpenMarkdown-editor/blob/main/docs/getting-started/install.md#release-age-gates)).
 
 ### Entries and renderers
 
@@ -443,8 +445,11 @@ ES2022 JavaScript. Mounting needs a DOM. Importing does not.
 Measured by the release check (the numbers it holds the build to are in its budgets):
 
 - The package's own code: about 99 KB gzipped, shipped unminified (your bundler minifies it).
-- A Vite app with the editor, first load including CodeMirror: about 185 KB gzipped, with any
-  entry. HTML, CSS and JavaScript grammars, Temml and Mermaid are not in it.
+- A Vite or Rollup app with the editor, first load including CodeMirror: about 185 KB gzipped,
+  with any entry. HTML, CSS and JavaScript grammars, Temml and Mermaid are not in it. With
+  esbuild (`--splitting`) it is about 250 KB: esbuild cannot split the HTML grammar out of
+  `@codemirror/lang-markdown`, which calls it at its top level
+  ([bundling](https://github.com/OpenMarkdown-dev/OpenMarkdown-editor/blob/main/docs/guides/bundling.md#first-load-with-a-splitting-bundler)).
 - Loaded only when a document needs them: Temml about 58 KB, the HTML grammar about 62 KB, and
   Mermaid about 160 KB for its core, gzipped. Mermaid's diagram types load as separate chunks.
 - Everything a page could ever load: about 1.25 MB gzipped with the main entry, 305 KB with

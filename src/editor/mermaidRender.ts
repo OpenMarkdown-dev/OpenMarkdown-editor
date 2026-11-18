@@ -1,4 +1,4 @@
-import { diagramDeclarationProblem, mermaidMarkup } from "./diagramMarkup";
+import { AFTER_ROOT_ID, diagramDeclarationProblem, mermaidMarkup } from "./diagramMarkup";
 import type { SafeMarkup } from "./markup";
 import type { ColorScheme } from "./environment";
 import { measureMermaidStep, nextDiagramId, type MermaidModule } from "./mermaid";
@@ -62,8 +62,11 @@ export const SECURE_KEYS = [
 /**
  * Give a host's diagram the editor's root id (`om-mermaid-N`), the one the
  * diagram profile scopes ids, `url(#…)` references and CSS by: its own root id
- * — wherever it starts an id or a `#` reference — becomes ours; an SVG with
- * no root id gets ours. Renaming only; the result is still vetted in full.
+ * — wherever it starts an id or a `#` reference (`url(#…)`, a `<style>`
+ * selector) and the name is the root's by `derivedFromRoot` (so mermaid's
+ * `<id>_flowchart-v2-pointEnd` markers too, never a longer `<id>0`) — becomes
+ * ours; an SVG with no root id gets ours. Renaming only; the result is still
+ * vetted in full.
  */
 // The root element's start tag, by name (a diagram is not an editor glyph).
 const ROOT_START = new RegExp(String.raw`^\s*<(?:svg)\b`);
@@ -73,7 +76,7 @@ export function adoptDiagram(drawing: string, id: string): string {
   const root = ROOT_ID.exec(drawing);
   if (!root) return drawing.replace(ROOT_START, (start) => `${start} id="${id}"`);
   const own = root[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return drawing.replace(new RegExp(`(\\sid="|#)${own}(?![\\w])`, "g"), `$1${id}`);
+  return drawing.replace(new RegExp(`(\\sid="|#)${own}${AFTER_ROOT_ID}`, "g"), `$1${id}`);
 }
 
 /**
